@@ -32,6 +32,10 @@ export class FootballDataProvider implements SportsDataProvider {
     };
   }
 
+  private formatDate(date: Date): string {
+    return date.toISOString().split('T')[0];
+  }
+
   async getLiveMatches(): Promise<Match[]> {
     const response = await firstValueFrom(
       this.http.get(`${this.baseUrl}/matches?status=LIVE`, {
@@ -46,6 +50,19 @@ export class FootballDataProvider implements SportsDataProvider {
       this.http.get(`${this.baseUrl}/matches`, {
         headers: this.headers,
       }),
+    );
+    return response.data.matches.map((m) => this.mapMatch(m));
+  }
+
+  async getRecentFinishedMatches(days: number): Promise<Match[]> {
+    const dateTo = new Date();
+    const dateFrom = new Date(Date.now() - days * 86400000);
+
+    const response = await firstValueFrom(
+      this.http.get(
+        `${this.baseUrl}/matches?dateFrom=${this.formatDate(dateFrom)}&dateTo=${this.formatDate(dateTo)}&status=FINISHED`,
+        { headers: this.headers },
+      ),
     );
     return response.data.matches.map((m) => this.mapMatch(m));
   }

@@ -13,4 +13,5 @@ export interface Match {
 export interface SportsDataProvider {
   getLiveMatches(): Promise<Match[]>;
   getTodayMatches(): Promise<Match[]>;
+  getRecentFinishedMatches(days: number): Promise<Match[]>;
 }
