@@ -1,9 +1,12 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { SPORTS_DATA_PROVIDER } from '../sports-data/sports-data.constants';
 import type {
   SportsDataProvider,
   Match,
 } from '../sports-data/sports-data-provider.interface';
+import { ApiFootballService } from '../api-football/api-football.service';
+
+const LIVE_STATUSES = ['LIVE', 'IN_PLAY', 'PAUSED'];
 
 interface CacheEntry {
   data: Match[];
@@ -12,6 +15,7 @@ interface CacheEntry {
 
 @Injectable()
 export class MatchesService {
+  private readonly logger = new Logger(MatchesService.name);
   private liveCache: CacheEntry | null = null;
   private todayCache: CacheEntry | null = null;
   private byDateCache = new Map<string, CacheEntry>();
@@ -21,18 +25,42 @@ export class MatchesService {
   constructor(
     @Inject(SPORTS_DATA_PROVIDER)
     private sportsDataProvider: SportsDataProvider,
+    private apiFootball: ApiFootballService,
   ) {}
 
+  private async enrichWithLiveMinutes(matches: Match[]): Promise<Match[]> {
+    const hasLive = matches.some((m) => LIVE_STATUSES.includes(m.status));
+    if (!hasLive) return matches;
+
+    try {
+      const liveMinutes = await this.apiFootball.getLiveMinutes();
+      return matches.map((m) => {
+        if (!LIVE_STATUSES.includes(m.status)) return m;
+        const label = this.apiFootball.findMinuteFor(
+          liveMinutes,
+          m.homeTeam,
+          m.awayTeam,
+        );
+        return { ...m, liveMinuteLabel: label };
+      });
+    } catch (error) {
+      this.logger.warn(`Minutes en direct indisponibles: ${error.message}`);
+      return matches;
+    }
+  }
+
   async getLiveMatches() {
-    return this.getWithCache('live', () =>
+    const matches = await this.getWithCache('live', () =>
       this.sportsDataProvider.getLiveMatches(),
     );
+    return this.enrichWithLiveMinutes(matches);
   }
 
   async getTodayMatches() {
-    return this.getWithCache('today', () =>
+    const matches = await this.getWithCache('today', () =>
       this.sportsDataProvider.getTodayMatches(),
     );
+    return this.enrichWithLiveMinutes(matches);
   }
 
   async getMatchesByDate(date: string): Promise<Match[]> {
@@ -40,20 +68,18 @@ export class MatchesService {
     const cache = this.byDateCache.get(date);
 
     if (cache && cache.expiresAt > now) {
-      console.log(`[CACHE HIT] date:${date}`);
-      return cache.data;
+      return this.enrichWithLiveMinutes(cache.data);
     }
 
     try {
-      console.log(`[API FETCH] date:${date}`);
       const data = await this.sportsDataProvider.getMatchesByDate(date);
       this.byDateCache.set(date, {
         data,
         expiresAt: now + this.DATE_CACHE_DURATION_MS,
       });
-      return data;
+      return this.enrichWithLiveMinutes(data);
     } catch (error) {
-      if (cache) return cache.data;
+      if (cache) return this.enrichWithLiveMinutes(cache.data);
       throw error;
     }
   }
@@ -66,21 +92,17 @@ export class MatchesService {
     const now = Date.now();
 
     if (cache && cache.expiresAt > now) {
-      console.log(`[CACHE HIT] ${key}`);
       return cache.data;
     }
 
     try {
-      console.log(`[API FETCH] ${key}`);
       const data = await fetchFn();
       const entry = { data, expiresAt: now + this.CACHE_DURATION_MS };
       if (key === 'live') this.liveCache = entry;
       else this.todayCache = entry;
       return data;
     } catch (error) {
-      if (cache) {
-        return cache.data;
-      }
+      if (cache) return cache.data;
       throw error;
     }
   }

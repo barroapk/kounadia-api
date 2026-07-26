@@ -8,6 +8,7 @@ export interface Match {
   status: string;
   minute: number | null;
   utcDate: string;
+  liveMinuteLabel?: string | null;
 }
 
 export interface SportsDataProvider {
