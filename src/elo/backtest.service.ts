@@ -28,11 +28,7 @@ export class BacktestService {
         .eq('status', 'FINISHED')
         .order('utc_date', { ascending: true })
         .range(from, from + PAGE_SIZE - 1);
-
-      if (competitionLike) {
-        query = query.ilike('competition', `%${competitionLike}%`);
-      }
-
+      if (competitionLike) query = query.ilike('competition', `%${competitionLike}%`);
       const { data, error } = await query;
       if (error) throw error;
       if (!data || data.length === 0) break;
@@ -43,39 +39,31 @@ export class BacktestService {
     return all;
   }
 
-  async runBacktest(competitionLike?: string, splitRatio = 0.6) {
+  async runBacktest(competitionLike?: string, homeAdvantage = 100, splitRatio = 0.6) {
     const matches = await this.fetchMatches(competitionLike);
-    if (matches.length < 20) {
-      return { error: `Pas assez de matchs (${matches.length} trouvés)` };
-    }
+    if (matches.length < 20) return { error: `Pas assez de matchs (${matches.length} trouvés)` };
 
     const splitIndex = Math.floor(matches.length * splitRatio);
     const trainMatches = matches.slice(0, splitIndex);
     const testMatches = matches.slice(splitIndex);
 
-    const states = new Map<string, { home: number; away: number }>();
-    const getState = (t: string) => {
-      if (!states.has(t)) states.set(t, { home: DEFAULT_RATING, away: DEFAULT_RATING });
-      return states.get(t)!;
-    };
+    const ratings = new Map<string, number>();
+    const getRating = (t: string) => ratings.get(t) ?? DEFAULT_RATING;
 
     for (const m of trainMatches) {
       if (m.home_score === null || m.away_score === null) continue;
-      const home = getState(m.home_team);
-      const away = getState(m.away_team);
-
-      const dr = home.home - away.away;
+      const home = getRating(m.home_team);
+      const away = getRating(m.away_team);
+      const dr = home + homeAdvantage - away;
       const expectedHome = 1 / (Math.pow(10, -dr / 400) + 1);
       let actualHome: number;
       if (m.home_score > m.away_score) actualHome = 1;
       else if (m.home_score === m.away_score) actualHome = 0.5;
       else actualHome = 0;
-
       const g = this.goalDifferenceMultiplier(m.home_score - m.away_score);
       const change = K_FACTOR * g * (actualHome - expectedHome);
-
-      home.home += change;
-      away.away -= change;
+      ratings.set(m.home_team, home + change);
+      ratings.set(m.away_team, away - change);
     }
 
     let correct = 0;
@@ -84,15 +72,10 @@ export class BacktestService {
 
     for (const m of testMatches) {
       if (m.home_score === null || m.away_score === null) continue;
-      const homeRating = getState(m.home_team).home;
-      const awayRating = getState(m.away_team).away;
-
-      const actualResult =
-        m.home_score > m.away_score ? 'HOME' : m.home_score < m.away_score ? 'AWAY' : 'DRAW';
-
-      const diff = homeRating - awayRating;
-      const prediction = diff > 30 ? 'HOME' : diff < -30 ? 'AWAY' : 'DRAW';
-
+      const homeElo = getRating(m.home_team) + homeAdvantage;
+      const awayElo = getRating(m.away_team);
+      const actualResult = m.home_score > m.away_score ? 'HOME' : m.home_score < m.away_score ? 'AWAY' : 'DRAW';
+      const prediction = homeElo > awayElo + 30 ? 'HOME' : awayElo > homeElo + 30 ? 'AWAY' : 'DRAW';
       if (prediction === actualResult) correct++;
       if (actualResult === 'HOME') homeAlwaysCorrect++;
       total++;
@@ -100,6 +83,7 @@ export class BacktestService {
 
     return {
       competition: competitionLike ?? 'TOUTES COMPETITIONS',
+      homeAdvantage,
       trainMatches: trainMatches.length,
       testMatches: total,
       eloAccuracy: Math.round((correct / total) * 1000) / 10,

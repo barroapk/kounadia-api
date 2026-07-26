@@ -13,11 +13,10 @@ export class BacktestController {
   async run(
     @Query('secret') secret: string,
     @Query('competition') competition?: string,
+    @Query('homeAdvantage') homeAdvantage?: string,
   ) {
     const expected = this.configService.get<string>('SYNC_SECRET');
-    if (!expected || secret !== expected) {
-      throw new ForbiddenException('Clé secrète invalide');
-    }
-    return this.backtestService.runBacktest(competition);
+    if (!expected || secret !== expected) throw new ForbiddenException('Clé secrète invalide');
+    return this.backtestService.runBacktest(competition, homeAdvantage ? parseInt(homeAdvantage, 10) : 100);
   }
 }
