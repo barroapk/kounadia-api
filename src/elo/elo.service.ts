@@ -4,11 +4,7 @@ import { SupabaseService } from '../supabase/supabase.service';
 const DEFAULT_RATING = 1500;
 const HOME_ADVANTAGE = 100;
 const K_FACTOR = 20;
-
-interface RatingUpdate {
-  team: string;
-  newRating: number;
-}
+const PAGE_SIZE = 1000;
 
 @Injectable()
 export class EloService {
@@ -48,14 +44,31 @@ export class EloService {
     };
   }
 
-  async initializeFromHistory(): Promise<{ teamsProcessed: number; matchesReplayed: number }> {
-    const { data: matches, error } = await this.supabase.client
-      .from('match_history')
-      .select('*')
-      .eq('status', 'FINISHED')
-      .order('utc_date', { ascending: true });
+  private async fetchAllFinishedMatches(): Promise<any[]> {
+    const allMatches: any[] = [];
+    let from = 0;
 
-    if (error) throw error;
+    while (true) {
+      const { data, error } = await this.supabase.client
+        .from('match_history')
+        .select('*')
+        .eq('status', 'FINISHED')
+        .order('utc_date', { ascending: true })
+        .range(from, from + PAGE_SIZE - 1);
+
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+
+      allMatches.push(...data);
+      if (data.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+
+    return allMatches;
+  }
+
+  async initializeFromHistory(): Promise<{ teamsProcessed: number; matchesReplayed: number }> {
+    const matches = await this.fetchAllFinishedMatches();
 
     const ratings = new Map<string, { rating: number; matches: number }>();
 
