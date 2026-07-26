@@ -14,7 +14,9 @@ interface CacheEntry {
 export class MatchesService {
   private liveCache: CacheEntry | null = null;
   private todayCache: CacheEntry | null = null;
+  private byDateCache = new Map<string, CacheEntry>();
   private readonly CACHE_DURATION_MS = 30000;
+  private readonly DATE_CACHE_DURATION_MS = 300000;
 
   constructor(
     @Inject(SPORTS_DATA_PROVIDER)
@@ -31,6 +33,29 @@ export class MatchesService {
     return this.getWithCache('today', () =>
       this.sportsDataProvider.getTodayMatches(),
     );
+  }
+
+  async getMatchesByDate(date: string): Promise<Match[]> {
+    const now = Date.now();
+    const cache = this.byDateCache.get(date);
+
+    if (cache && cache.expiresAt > now) {
+      console.log(`[CACHE HIT] date:${date}`);
+      return cache.data;
+    }
+
+    try {
+      console.log(`[API FETCH] date:${date}`);
+      const data = await this.sportsDataProvider.getMatchesByDate(date);
+      this.byDateCache.set(date, {
+        data,
+        expiresAt: now + this.DATE_CACHE_DURATION_MS,
+      });
+      return data;
+    } catch (error) {
+      if (cache) return cache.data;
+      throw error;
+    }
   }
 
   private async getWithCache(

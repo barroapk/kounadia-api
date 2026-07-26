@@ -76,4 +76,22 @@ export class FootballDataProvider implements SportsDataProvider {
     );
     return this.mapMatch(response.data);
   }
+
+  async getMatchesByDate(date: string): Promise<Match[]> {
+    // football-data.org renvoie 0 résultat quand dateFrom = dateTo (bug/particularité constatée).
+    // On élargit la fenêtre d'un jour, puis on filtre nous-mêmes sur la date exacte demandée.
+    const requestedDate = new Date(date + 'T00:00:00Z');
+    const dateTo = new Date(requestedDate.getTime() + 86400000);
+
+    const response = await firstValueFrom(
+      this.http.get(
+        `${this.baseUrl}/matches?dateFrom=${date}&dateTo=${this.formatDate(dateTo)}`,
+        { headers: this.headers },
+      ),
+    );
+
+    return response.data.matches
+      .map((m) => this.mapMatch(m))
+      .filter((m) => m.utcDate.startsWith(date));
+  }
 }
