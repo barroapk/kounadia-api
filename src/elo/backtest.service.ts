@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 
 const DEFAULT_RATING = 1500;
+const DEFAULT_HOME_ADVANTAGE = 100;
 const K_FACTOR = 20;
 const PAGE_SIZE = 1000;
 
@@ -39,7 +40,11 @@ export class BacktestService {
     return all;
   }
 
-  async runBacktest(competitionLike?: string, homeAdvantage = 100, splitRatio = 0.6) {
+  async runBacktest(
+    competitionLike?: string,
+    kHomeAdvantage = 4,
+    splitRatio = 0.6,
+  ) {
     const matches = await this.fetchMatches(competitionLike);
     if (matches.length < 20) return { error: `Pas assez de matchs (${matches.length} trouvés)` };
 
@@ -47,23 +52,30 @@ export class BacktestService {
     const trainMatches = matches.slice(0, splitIndex);
     const testMatches = matches.slice(splitIndex);
 
-    const ratings = new Map<string, number>();
-    const getRating = (t: string) => ratings.get(t) ?? DEFAULT_RATING;
+    const states = new Map<string, { rating: number; homeAdvantage: number }>();
+    const getState = (t: string) => {
+      if (!states.has(t)) states.set(t, { rating: DEFAULT_RATING, homeAdvantage: DEFAULT_HOME_ADVANTAGE });
+      return states.get(t)!;
+    };
 
     for (const m of trainMatches) {
       if (m.home_score === null || m.away_score === null) continue;
-      const home = getRating(m.home_team);
-      const away = getRating(m.away_team);
-      const dr = home + homeAdvantage - away;
+      const home = getState(m.home_team);
+      const away = getState(m.away_team);
+
+      const dr = home.rating + home.homeAdvantage - away.rating;
       const expectedHome = 1 / (Math.pow(10, -dr / 400) + 1);
       let actualHome: number;
       if (m.home_score > m.away_score) actualHome = 1;
       else if (m.home_score === m.away_score) actualHome = 0.5;
       else actualHome = 0;
+
       const g = this.goalDifferenceMultiplier(m.home_score - m.away_score);
-      const change = K_FACTOR * g * (actualHome - expectedHome);
-      ratings.set(m.home_team, home + change);
-      ratings.set(m.away_team, away - change);
+      const surprise = actualHome - expectedHome;
+
+      home.rating += K_FACTOR * g * surprise;
+      away.rating -= K_FACTOR * g * surprise;
+      home.homeAdvantage += kHomeAdvantage * g * surprise;
     }
 
     let correct = 0;
@@ -72,10 +84,15 @@ export class BacktestService {
 
     for (const m of testMatches) {
       if (m.home_score === null || m.away_score === null) continue;
-      const homeElo = getRating(m.home_team) + homeAdvantage;
-      const awayElo = getRating(m.away_team);
+      const home = getState(m.home_team);
+      const away = getState(m.away_team);
+
+      const homeElo = home.rating + home.homeAdvantage;
+      const awayElo = away.rating;
+
       const actualResult = m.home_score > m.away_score ? 'HOME' : m.home_score < m.away_score ? 'AWAY' : 'DRAW';
       const prediction = homeElo > awayElo + 30 ? 'HOME' : awayElo > homeElo + 30 ? 'AWAY' : 'DRAW';
+
       if (prediction === actualResult) correct++;
       if (actualResult === 'HOME') homeAlwaysCorrect++;
       total++;
@@ -83,7 +100,7 @@ export class BacktestService {
 
     return {
       competition: competitionLike ?? 'TOUTES COMPETITIONS',
-      homeAdvantage,
+      kHomeAdvantage,
       trainMatches: trainMatches.length,
       testMatches: total,
       eloAccuracy: Math.round((correct / total) * 1000) / 10,
