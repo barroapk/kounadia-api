@@ -36,17 +36,22 @@ export class BacktestService {
     return { home: homeRating + change, away: awayRating - change };
   }
 
-  private async fetchMatches(competitionLike: string): Promise<any[]> {
+  private async fetchMatches(competitionLike?: string): Promise<any[]> {
     const all: any[] = [];
     let from = 0;
     while (true) {
-      const { data, error } = await this.supabase.client
+      let query = this.supabase.client
         .from('match_history')
         .select('*')
         .eq('status', 'FINISHED')
-        .ilike('competition', `%${competitionLike}%`)
         .order('utc_date', { ascending: true })
         .range(from, from + PAGE_SIZE - 1);
+
+      if (competitionLike) {
+        query = query.ilike('competition', `%${competitionLike}%`);
+      }
+
+      const { data, error } = await query;
       if (error) throw error;
       if (!data || data.length === 0) break;
       all.push(...data);
@@ -56,10 +61,10 @@ export class BacktestService {
     return all;
   }
 
-  async runBacktest(competitionLike: string, splitRatio = 0.6) {
+  async runBacktest(competitionLike?: string, splitRatio = 0.6) {
     const matches = await this.fetchMatches(competitionLike);
     if (matches.length < 20) {
-      return { error: `Pas assez de matchs pour "${competitionLike}" (${matches.length} trouvés)` };
+      return { error: `Pas assez de matchs (${matches.length} trouvés)` };
     }
 
     const splitIndex = Math.floor(matches.length * splitRatio);
@@ -98,7 +103,7 @@ export class BacktestService {
     }
 
     return {
-      competition: competitionLike,
+      competition: competitionLike ?? 'TOUTES COMPETITIONS',
       trainMatches: trainMatches.length,
       testMatches: eloTotal,
       eloAccuracy: Math.round((eloCorrect / eloTotal) * 1000) / 10,

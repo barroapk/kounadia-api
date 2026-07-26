@@ -12,7 +12,7 @@ export class BacktestController {
   @Get('backtest')
   async run(
     @Query('secret') secret: string,
-    @Query('competition') competition: string,
+    @Query('competition') competition?: string,
   ) {
     const expected = this.configService.get<string>('SYNC_SECRET');
     if (!expected || secret !== expected) {
