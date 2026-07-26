@@ -6,7 +6,6 @@ import { SupabaseService } from '../supabase/supabase.service';
 
 const MIN_MATCHES_FOR_ELIGIBILITY = 3;
 const MIN_ELO_MATCHES = 5;
-const HOME_ADVANTAGE = 100;
 const ELO_THRESHOLD = 50;
 
 export interface EligibleMatch {
@@ -59,24 +58,25 @@ export class PredictionsService {
 
       if (!hasEnoughData) continue;
 
-      const homeElo = await this.eloService.getRating(match.homeTeam);
-      const awayElo = await this.eloService.getRating(match.awayTeam);
-      const adjustedHomeElo = Math.round(homeElo + HOME_ADVANTAGE);
-      const roundedAwayElo = Math.round(awayElo);
-      const eloDiff = adjustedHomeElo - roundedAwayElo;
+      const homeData = await this.eloService.getRating(match.homeTeam);
+      const awayData = await this.eloService.getRating(match.awayTeam);
+
+      const adjustedHomeElo = Math.round(homeData.rating + homeData.homeAdvantage);
+      const adjustedAwayElo = Math.round(awayData.rating + awayData.awayBonus);
+      const eloDiff = adjustedHomeElo - adjustedAwayElo;
 
       let favoredSide: 'home' | 'away' | 'balanced';
       let note: string;
 
       if (eloDiff > ELO_THRESHOLD) {
         favoredSide = 'home';
-        note = `${match.homeTeam} présente une force effective supérieure à domicile (${adjustedHomeElo}, avantage du terrain inclus, contre ${roundedAwayElo} pour ${match.awayTeam}).`;
+        note = `${match.homeTeam} présente une force effective supérieure à domicile (${adjustedHomeElo}, avantage du terrain propre à cette équipe inclus, contre ${adjustedAwayElo} pour ${match.awayTeam} à l'extérieur).`;
       } else if (eloDiff < -ELO_THRESHOLD) {
         favoredSide = 'away';
-        note = `${match.awayTeam} présente une force supérieure (${roundedAwayElo}), suffisante pour compenser l'avantage du terrain de ${match.homeTeam} (${adjustedHomeElo}).`;
+        note = `${match.awayTeam} présente une force supérieure à l'extérieur (${adjustedAwayElo}), suffisante pour compenser l'avantage du terrain de ${match.homeTeam} (${adjustedHomeElo}).`;
       } else {
         favoredSide = 'balanced';
-        note = `Forces effectives proches une fois l'avantage du terrain pris en compte (${adjustedHomeElo} contre ${roundedAwayElo}) : match difficile à départager.`;
+        note = `Forces effectives proches dans leur contexte respectif (${adjustedHomeElo} contre ${adjustedAwayElo}) : match difficile à départager.`;
       }
 
       eligible.push({
@@ -86,8 +86,8 @@ export class PredictionsService {
         awayTeam: match.awayTeam,
         homeForm,
         awayForm,
-        homeElo: Math.round(homeElo),
-        awayElo: roundedAwayElo,
+        homeElo: Math.round(homeData.rating),
+        awayElo: Math.round(awayData.rating),
         favoredSide,
         note,
       });

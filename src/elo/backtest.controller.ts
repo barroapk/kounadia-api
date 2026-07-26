@@ -14,9 +14,14 @@ export class BacktestController {
     @Query('secret') secret: string,
     @Query('competition') competition?: string,
     @Query('kHomeAdvantage') kHomeAdvantage?: string,
+    @Query('kAwayBonus') kAwayBonus?: string,
   ) {
     const expected = this.configService.get<string>('SYNC_SECRET');
     if (!expected || secret !== expected) throw new ForbiddenException('Clé secrète invalide');
-    return this.backtestService.runBacktest(competition, kHomeAdvantage ? parseInt(kHomeAdvantage, 10) : 4);
+    return this.backtestService.runBacktest(
+      competition,
+      kHomeAdvantage ? parseInt(kHomeAdvantage, 10) : 4,
+      kAwayBonus ? parseInt(kAwayBonus, 10) : 4,
+    );
   }
 }

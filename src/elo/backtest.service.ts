@@ -3,6 +3,7 @@ import { SupabaseService } from '../supabase/supabase.service';
 
 const DEFAULT_RATING = 1500;
 const DEFAULT_HOME_ADVANTAGE = 100;
+const DEFAULT_AWAY_BONUS = 0;
 const K_FACTOR = 20;
 const PAGE_SIZE = 1000;
 
@@ -43,6 +44,7 @@ export class BacktestService {
   async runBacktest(
     competitionLike?: string,
     kHomeAdvantage = 4,
+    kAwayBonus = 4,
     splitRatio = 0.6,
   ) {
     const matches = await this.fetchMatches(competitionLike);
@@ -52,9 +54,11 @@ export class BacktestService {
     const trainMatches = matches.slice(0, splitIndex);
     const testMatches = matches.slice(splitIndex);
 
-    const states = new Map<string, { rating: number; homeAdvantage: number }>();
+    const states = new Map<string, { rating: number; homeAdvantage: number; awayBonus: number }>();
     const getState = (t: string) => {
-      if (!states.has(t)) states.set(t, { rating: DEFAULT_RATING, homeAdvantage: DEFAULT_HOME_ADVANTAGE });
+      if (!states.has(t)) {
+        states.set(t, { rating: DEFAULT_RATING, homeAdvantage: DEFAULT_HOME_ADVANTAGE, awayBonus: DEFAULT_AWAY_BONUS });
+      }
       return states.get(t)!;
     };
 
@@ -63,7 +67,7 @@ export class BacktestService {
       const home = getState(m.home_team);
       const away = getState(m.away_team);
 
-      const dr = home.rating + home.homeAdvantage - away.rating;
+      const dr = home.rating + home.homeAdvantage - (away.rating + away.awayBonus);
       const expectedHome = 1 / (Math.pow(10, -dr / 400) + 1);
       let actualHome: number;
       if (m.home_score > m.away_score) actualHome = 1;
@@ -76,6 +80,7 @@ export class BacktestService {
       home.rating += K_FACTOR * g * surprise;
       away.rating -= K_FACTOR * g * surprise;
       home.homeAdvantage += kHomeAdvantage * g * surprise;
+      away.awayBonus -= kAwayBonus * g * surprise;
     }
 
     let correct = 0;
@@ -88,7 +93,7 @@ export class BacktestService {
       const away = getState(m.away_team);
 
       const homeElo = home.rating + home.homeAdvantage;
-      const awayElo = away.rating;
+      const awayElo = away.rating + away.awayBonus;
 
       const actualResult = m.home_score > m.away_score ? 'HOME' : m.home_score < m.away_score ? 'AWAY' : 'DRAW';
       const prediction = homeElo > awayElo + 30 ? 'HOME' : awayElo > homeElo + 30 ? 'AWAY' : 'DRAW';
@@ -101,6 +106,7 @@ export class BacktestService {
     return {
       competition: competitionLike ?? 'TOUTES COMPETITIONS',
       kHomeAdvantage,
+      kAwayBonus,
       trainMatches: trainMatches.length,
       testMatches: total,
       eloAccuracy: Math.round((correct / total) * 1000) / 10,

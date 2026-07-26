@@ -3,14 +3,23 @@ import { SupabaseService } from '../supabase/supabase.service';
 
 const DEFAULT_RATING = 1500;
 const DEFAULT_HOME_ADVANTAGE = 100;
+const DEFAULT_AWAY_BONUS = 0;
 const K_FACTOR = 20;
 const K_HOME_ADVANTAGE = 4;
+const K_AWAY_BONUS = 4;
 const PAGE_SIZE = 1000;
 
 interface TeamState {
   rating: number;
   homeAdvantage: number;
+  awayBonus: number;
   matches: number;
+}
+
+export interface TeamRating {
+  rating: number;
+  homeAdvantage: number;
+  awayBonus: number;
 }
 
 @Injectable()
@@ -54,6 +63,7 @@ export class EloService {
         states.set(team, {
           rating: DEFAULT_RATING,
           homeAdvantage: DEFAULT_HOME_ADVANTAGE,
+          awayBonus: DEFAULT_AWAY_BONUS,
           matches: 0,
         });
       }
@@ -66,7 +76,7 @@ export class EloService {
       const home = getState(m.home_team);
       const away = getState(m.away_team);
 
-      const dr = home.rating + home.homeAdvantage - away.rating;
+      const dr = home.rating + home.homeAdvantage - (away.rating + away.awayBonus);
       const expectedHome = 1 / (Math.pow(10, -dr / 400) + 1);
 
       let actualHome: number;
@@ -80,9 +90,9 @@ export class EloService {
       home.rating += K_FACTOR * g * surprise;
       away.rating -= K_FACTOR * g * surprise;
 
-      // L'avantage domicile de CETTE équipe évolue lentement,
-      // ancré sur la moyenne générale tant que peu de matchs sont disponibles.
+      // Ajustements individuels lents, chacun ancré sur sa valeur par défaut
       home.homeAdvantage += K_HOME_ADVANTAGE * g * surprise;
+      away.awayBonus -= K_AWAY_BONUS * g * surprise;
 
       home.matches += 1;
       away.matches += 1;
@@ -92,6 +102,7 @@ export class EloService {
       team_name,
       rating: Math.round(s.rating * 10) / 10,
       home_advantage: Math.round(s.homeAdvantage * 10) / 10,
+      away_bonus: Math.round(s.awayBonus * 10) / 10,
       matches_played: s.matches,
     }));
 
@@ -105,16 +116,17 @@ export class EloService {
     return { teamsProcessed: rows.length, matchesReplayed: matches.length };
   }
 
-  async getRating(teamName: string): Promise<{ rating: number; homeAdvantage: number }> {
+  async getRating(teamName: string): Promise<TeamRating> {
     const { data } = await this.supabase.client
       .from('team_ratings')
-      .select('rating, home_advantage')
+      .select('rating, home_advantage, away_bonus')
       .eq('team_name', teamName)
       .maybeSingle();
 
     return {
       rating: data?.rating ?? DEFAULT_RATING,
       homeAdvantage: data?.home_advantage ?? DEFAULT_HOME_ADVANTAGE,
+      awayBonus: data?.away_bonus ?? DEFAULT_AWAY_BONUS,
     };
   }
 }
