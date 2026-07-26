@@ -9,6 +9,7 @@ import { AnalyzerModule } from './analyzer/analyzer.module';
 import { ApiFootballModule } from './api-football/api-football.module';
 import { TeamFormModule } from './team-form/team-form.module';
 import { PredictionsModule } from './predictions/predictions.module';
+import { EloModule } from './elo/elo.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { PredictionsModule } from './predictions/predictions.module';
     ApiFootballModule,
     TeamFormModule,
     PredictionsModule,
+    EloModule,
   ],
   controllers: [AppController],
   providers: [AppService],
