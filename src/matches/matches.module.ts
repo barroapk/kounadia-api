@@ -10,5 +10,6 @@ import { SupabaseModule } from '../supabase/supabase.module';
   imports: [SportsDataModule, SupabaseModule],
   controllers: [MatchesController, MatchesSyncController],
   providers: [MatchesService, MatchesSyncService],
+  exports: [MatchesService],
 })
 export class MatchesModule {}

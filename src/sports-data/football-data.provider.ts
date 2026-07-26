@@ -55,8 +55,9 @@ export class FootballDataProvider implements SportsDataProvider {
   }
 
   async getRecentFinishedMatches(days: number): Promise<Match[]> {
+    const safeDays = Math.min(days, 10);
     const dateTo = new Date();
-    const dateFrom = new Date(Date.now() - days * 86400000);
+    const dateFrom = new Date(Date.now() - safeDays * 86400000);
 
     const response = await firstValueFrom(
       this.http.get(
@@ -65,5 +66,14 @@ export class FootballDataProvider implements SportsDataProvider {
       ),
     );
     return response.data.matches.map((m) => this.mapMatch(m));
+  }
+
+  async getMatchById(id: number): Promise<Match> {
+    const response = await firstValueFrom(
+      this.http.get(`${this.baseUrl}/matches/${id}`, {
+        headers: this.headers,
+      }),
+    );
+    return this.mapMatch(response.data);
   }
 }

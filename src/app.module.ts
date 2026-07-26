@@ -5,6 +5,10 @@ import { AppService } from './app.service';
 import { SupabaseModule } from './supabase/supabase.module';
 import { LeaguesModule } from './leagues/leagues.module';
 import { MatchesModule } from './matches/matches.module';
+import { AnalyzerModule } from './analyzer/analyzer.module';
+import { ApiFootballModule } from './api-football/api-football.module';
+import { TeamFormModule } from './team-form/team-form.module';
+import { PredictionsModule } from './predictions/predictions.module';
 
 @Module({
   imports: [
@@ -12,6 +16,10 @@ import { MatchesModule } from './matches/matches.module';
     SupabaseModule,
     LeaguesModule,
     MatchesModule,
+    AnalyzerModule,
+    ApiFootballModule,
+    TeamFormModule,
+    PredictionsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
