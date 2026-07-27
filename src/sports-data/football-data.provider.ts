@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
-import { Match, SportsDataProvider } from './sports-data-provider.interface';
+import { Match, SportsDataProvider, StandingRow } from './sports-data-provider.interface';
 import { HIERARCHY_BY_FOOTBALL_DATA_CODE } from '../config/competition-hierarchy';
 
 @Injectable()
@@ -28,12 +28,12 @@ export class FootballDataProvider implements SportsDataProvider {
       homeScore: m.score?.fullTime?.home ?? null,
       awayScore: m.score?.fullTime?.away ?? null,
       status: m.status,
-      provider: 'football-data' as const,
       minute: m.minute ?? null,
       utcDate: m.utcDate,
       homeTeamCrest: m.homeTeam?.crest ?? null,
       awayTeamCrest: m.awayTeam?.crest ?? null,
       competitionEmblem: m.competition?.emblem ?? null,
+      provider: 'football-data' as const,
       competitionCode: m.competition?.code ?? null,
       continent: HIERARCHY_BY_FOOTBALL_DATA_CODE[m.competition?.code]?.continent ?? 'Autre',
       country: HIERARCHY_BY_FOOTBALL_DATA_CODE[m.competition?.code]?.country ?? 'Autre',
@@ -46,18 +46,14 @@ export class FootballDataProvider implements SportsDataProvider {
 
   async getLiveMatches(): Promise<Match[]> {
     const response = await firstValueFrom(
-      this.http.get(`${this.baseUrl}/matches?status=LIVE`, {
-        headers: this.headers,
-      }),
+      this.http.get(`${this.baseUrl}/matches?status=LIVE`, { headers: this.headers }),
     );
     return response.data.matches.map((m) => this.mapMatch(m));
   }
 
   async getTodayMatches(): Promise<Match[]> {
     const response = await firstValueFrom(
-      this.http.get(`${this.baseUrl}/matches`, {
-        headers: this.headers,
-      }),
+      this.http.get(`${this.baseUrl}/matches`, { headers: this.headers }),
     );
     return response.data.matches.map((m) => this.mapMatch(m));
   }
@@ -78,9 +74,7 @@ export class FootballDataProvider implements SportsDataProvider {
 
   async getMatchById(id: number): Promise<Match> {
     const response = await firstValueFrom(
-      this.http.get(`${this.baseUrl}/matches/${id}`, {
-        headers: this.headers,
-      }),
+      this.http.get(`${this.baseUrl}/matches/${id}`, { headers: this.headers }),
     );
     return this.mapMatch(response.data);
   }
@@ -99,5 +93,31 @@ export class FootballDataProvider implements SportsDataProvider {
     return response.data.matches
       .map((m) => this.mapMatch(m))
       .filter((m) => m.utcDate.startsWith(date));
+  }
+
+  async getStandings(competitionCode: string): Promise<StandingRow[]> {
+    const response = await firstValueFrom(
+      this.http.get(`${this.baseUrl}/competitions/${competitionCode}/standings`, {
+        headers: this.headers,
+      }),
+    );
+
+    // On prend le tableau "TOTAL" (classement général), pas domicile/extérieur séparé
+    const totalTable = response.data.standings.find((s: any) => s.type === 'TOTAL');
+    if (!totalTable) return [];
+
+    return totalTable.table.map((row: any) => ({
+      position: row.position,
+      teamName: row.team.name,
+      teamCrest: row.team.crest ?? null,
+      playedGames: row.playedGames,
+      won: row.won,
+      draw: row.draw,
+      lost: row.lost,
+      goalsFor: row.goalsFor,
+      goalsAgainst: row.goalsAgainst,
+      goalDifference: row.goalDifference,
+      points: row.points,
+    }));
   }
 }

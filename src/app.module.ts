@@ -11,6 +11,7 @@ import { TeamFormModule } from './team-form/team-form.module';
 import { PredictionsModule } from './predictions/predictions.module';
 import { EloModule } from './elo/elo.module';
 import { ExtraCompetitionsModule } from './extra-competitions/extra-competitions.module';
+import { StandingsModule } from './standings/standings.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { ExtraCompetitionsModule } from './extra-competitions/extra-competitions
     PredictionsModule,
     EloModule,
     ExtraCompetitionsModule,
+    StandingsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
