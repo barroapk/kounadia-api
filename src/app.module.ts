@@ -10,6 +10,7 @@ import { ApiFootballModule } from './api-football/api-football.module';
 import { TeamFormModule } from './team-form/team-form.module';
 import { PredictionsModule } from './predictions/predictions.module';
 import { EloModule } from './elo/elo.module';
+import { ExtraCompetitionsModule } from './extra-competitions/extra-competitions.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { EloModule } from './elo/elo.module';
     TeamFormModule,
     PredictionsModule,
     EloModule,
+    ExtraCompetitionsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

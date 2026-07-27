@@ -3,6 +3,7 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { Match, SportsDataProvider } from './sports-data-provider.interface';
+import { HIERARCHY_BY_FOOTBALL_DATA_CODE } from '../config/competition-hierarchy';
 
 @Injectable()
 export class FootballDataProvider implements SportsDataProvider {
@@ -27,8 +28,15 @@ export class FootballDataProvider implements SportsDataProvider {
       homeScore: m.score?.fullTime?.home ?? null,
       awayScore: m.score?.fullTime?.away ?? null,
       status: m.status,
+      provider: 'football-data' as const,
       minute: m.minute ?? null,
       utcDate: m.utcDate,
+      homeTeamCrest: m.homeTeam?.crest ?? null,
+      awayTeamCrest: m.awayTeam?.crest ?? null,
+      competitionEmblem: m.competition?.emblem ?? null,
+      competitionCode: m.competition?.code ?? null,
+      continent: HIERARCHY_BY_FOOTBALL_DATA_CODE[m.competition?.code]?.continent ?? 'Autre',
+      country: HIERARCHY_BY_FOOTBALL_DATA_CODE[m.competition?.code]?.country ?? 'Autre',
     };
   }
 
@@ -78,8 +86,6 @@ export class FootballDataProvider implements SportsDataProvider {
   }
 
   async getMatchesByDate(date: string): Promise<Match[]> {
-    // football-data.org renvoie 0 résultat quand dateFrom = dateTo (bug/particularité constatée).
-    // On élargit la fenêtre d'un jour, puis on filtre nous-mêmes sur la date exacte demandée.
     const requestedDate = new Date(date + 'T00:00:00Z');
     const dateTo = new Date(requestedDate.getTime() + 86400000);
 

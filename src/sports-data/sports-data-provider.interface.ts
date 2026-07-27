@@ -9,6 +9,14 @@ export interface Match {
   minute: number | null;
   utcDate: string;
   liveMinuteLabel?: string | null;
+  homeTeamCrest?: string | null;
+  awayTeamCrest?: string | null;
+  competitionEmblem?: string | null;
+  provider: 'football-data' | 'api-football';
+  competitionCode?: string | null;
+  leagueId?: number | null;
+  continent?: string;
+  country?: string;
 }
 
 export interface SportsDataProvider {

@@ -5,6 +5,7 @@ import type {
   Match,
 } from '../sports-data/sports-data-provider.interface';
 import { ApiFootballService } from '../api-football/api-football.service';
+import { ExtraCompetitionsService } from '../extra-competitions/extra-competitions.service';
 
 const LIVE_STATUSES = ['LIVE', 'IN_PLAY', 'PAUSED'];
 
@@ -26,21 +27,27 @@ export class MatchesService {
     @Inject(SPORTS_DATA_PROVIDER)
     private sportsDataProvider: SportsDataProvider,
     private apiFootball: ApiFootballService,
+    private extraCompetitions: ExtraCompetitionsService,
   ) {}
 
+  private formatDate(date: Date): string {
+    return date.toISOString().split('T')[0];
+  }
+
+  /** N'enrichit que les matchs football-data.org : ceux d'API-Football
+   * portent déjà leur vraie minute, calculée à la source. */
   private async enrichWithLiveMinutes(matches: Match[]): Promise<Match[]> {
-    const hasLive = matches.some((m) => LIVE_STATUSES.includes(m.status));
+    const footballDataMatches = matches.filter((m) => m.provider === 'football-data');
+    const hasLive = footballDataMatches.some((m) => LIVE_STATUSES.includes(m.status));
     if (!hasLive) return matches;
 
     try {
       const liveMinutes = await this.apiFootball.getLiveMinutes();
       return matches.map((m) => {
-        if (!LIVE_STATUSES.includes(m.status)) return m;
-        const label = this.apiFootball.findMinuteFor(
-          liveMinutes,
-          m.homeTeam,
-          m.awayTeam,
-        );
+        if (m.provider !== 'football-data' || !LIVE_STATUSES.includes(m.status)) {
+          return m;
+        }
+        const label = this.apiFootball.findMinuteFor(liveMinutes, m.homeTeam, m.awayTeam);
         return { ...m, liveMinuteLabel: label };
       });
     } catch (error) {
@@ -49,40 +56,59 @@ export class MatchesService {
     }
   }
 
-  private formatDate(date: Date): string {
-    return date.toISOString().split('T')[0];
-  }
-
   async getLiveMatches() {
-    const matches = await this.getWithCache('live', () =>
-      this.sportsDataProvider.getLiveMatches(),
-    );
-    return this.enrichWithLiveMinutes(matches);
+    const cache = this.liveCache;
+    const now = Date.now();
+
+    if (cache && cache.expiresAt > now) {
+      return cache.data;
+    }
+
+    try {
+      const [footballDataLive, extraToday] = await Promise.all([
+        this.sportsDataProvider.getLiveMatches(),
+        this.extraCompetitions.getMatchesForDate(this.formatDate(new Date())),
+      ]);
+
+      const extraLive = extraToday.filter((m) => LIVE_STATUSES.includes(m.status));
+      const combined = [...footballDataLive, ...extraLive];
+      this.liveCache = { data: combined, expiresAt: now + this.CACHE_DURATION_MS };
+      return this.enrichWithLiveMinutes(combined);
+    } catch (error) {
+      if (cache) return cache.data;
+      throw error;
+    }
   }
 
-  /**
-   * "Aujourd'hui" = matchs dont la date correspond au jour calendaire actuel,
-   * PLUS les matchs d'hier encore en direct (cas fréquent : compétitions
-   * sud-américaines qui débutent après 21h UTC et se terminent après minuit).
-   * Sans ça, un match suivi en direct disparaît brutalement de l'écran au
-   * passage de minuit, alors qu'il est toujours en cours.
-   */
   async getTodayMatches() {
-    return this.getWithCache('today', async () => {
+    const cache = this.todayCache;
+    const now = Date.now();
+
+    if (cache && cache.expiresAt > now) {
+      return this.enrichWithLiveMinutes(cache.data);
+    }
+
+    try {
       const today = this.formatDate(new Date());
       const yesterday = this.formatDate(new Date(Date.now() - 86400000));
 
-      const [todayMatches, yesterdayMatches] = await Promise.all([
+      const [footballDataToday, footballDataYesterday, extraToday] = await Promise.all([
         this.sportsDataProvider.getMatchesByDate(today),
         this.sportsDataProvider.getMatchesByDate(yesterday),
+        this.extraCompetitions.getMatchesForDate(today),
       ]);
 
-      const stillLiveFromYesterday = yesterdayMatches.filter((m) =>
+      const stillLiveFromYesterday = footballDataYesterday.filter((m) =>
         LIVE_STATUSES.includes(m.status),
       );
 
-      return [...todayMatches, ...stillLiveFromYesterday];
-    }).then((matches) => this.enrichWithLiveMinutes(matches));
+      const combined = [...footballDataToday, ...stillLiveFromYesterday, ...extraToday];
+      this.todayCache = { data: combined, expiresAt: now + this.CACHE_DURATION_MS };
+      return this.enrichWithLiveMinutes(combined);
+    } catch (error) {
+      if (cache) return this.enrichWithLiveMinutes(cache.data);
+      throw error;
+    }
   }
 
   async getMatchesByDate(date: string): Promise<Match[]> {
@@ -94,37 +120,19 @@ export class MatchesService {
     }
 
     try {
-      const data = await this.sportsDataProvider.getMatchesByDate(date);
+      const [footballDataMatches, extraMatches] = await Promise.all([
+        this.sportsDataProvider.getMatchesByDate(date),
+        this.extraCompetitions.getMatchesForDate(date),
+      ]);
+
+      const combined = [...footballDataMatches, ...extraMatches];
       this.byDateCache.set(date, {
-        data,
+        data: combined,
         expiresAt: now + this.DATE_CACHE_DURATION_MS,
       });
-      return this.enrichWithLiveMinutes(data);
+      return this.enrichWithLiveMinutes(combined);
     } catch (error) {
       if (cache) return this.enrichWithLiveMinutes(cache.data);
-      throw error;
-    }
-  }
-
-  private async getWithCache(
-    key: 'live' | 'today',
-    fetchFn: () => Promise<Match[]>,
-  ): Promise<Match[]> {
-    const cache = key === 'live' ? this.liveCache : this.todayCache;
-    const now = Date.now();
-
-    if (cache && cache.expiresAt > now) {
-      return cache.data;
-    }
-
-    try {
-      const data = await fetchFn();
-      const entry = { data, expiresAt: now + this.CACHE_DURATION_MS };
-      if (key === 'live') this.liveCache = entry;
-      else this.todayCache = entry;
-      return data;
-    } catch (error) {
-      if (cache) return cache.data;
       throw error;
     }
   }

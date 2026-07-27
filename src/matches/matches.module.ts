@@ -9,9 +9,16 @@ import { SeasonImportService } from './season-import.service';
 import { SportsDataModule } from '../sports-data/sports-data.module';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { ApiFootballModule } from '../api-football/api-football.module';
+import { ExtraCompetitionsModule } from '../extra-competitions/extra-competitions.module';
 
 @Module({
-  imports: [SportsDataModule, SupabaseModule, HttpModule, ApiFootballModule],
+  imports: [
+    SportsDataModule,
+    SupabaseModule,
+    HttpModule,
+    ApiFootballModule,
+    ExtraCompetitionsModule,
+  ],
   controllers: [MatchesController, MatchesSyncController, SeasonImportController],
   providers: [MatchesService, MatchesSyncService, SeasonImportService],
   exports: [MatchesService],
