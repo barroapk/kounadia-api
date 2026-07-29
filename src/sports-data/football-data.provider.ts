@@ -37,6 +37,7 @@ export class FootballDataProvider implements SportsDataProvider {
       competitionCode: m.competition?.code ?? null,
       continent: HIERARCHY_BY_FOOTBALL_DATA_CODE[m.competition?.code]?.continent ?? 'Autre',
       country: HIERARCHY_BY_FOOTBALL_DATA_CODE[m.competition?.code]?.country ?? 'Autre',
+      matchday: m.matchday ?? null,
     };
   }
 
@@ -102,7 +103,6 @@ export class FootballDataProvider implements SportsDataProvider {
       }),
     );
 
-    // On prend le tableau "TOTAL" (classement général), pas domicile/extérieur séparé
     const totalTable = response.data.standings.find((s: any) => s.type === 'TOTAL');
     if (!totalTable) return [];
 
@@ -119,5 +119,14 @@ export class FootballDataProvider implements SportsDataProvider {
       goalDifference: row.goalDifference,
       points: row.points,
     }));
+  }
+
+  async getSeasonMatches(competitionCode: string): Promise<Match[]> {
+    const response = await firstValueFrom(
+      this.http.get(`${this.baseUrl}/competitions/${competitionCode}/matches`, {
+        headers: this.headers,
+      }),
+    );
+    return response.data.matches.map((m) => this.mapMatch(m));
   }
 }

@@ -12,6 +12,7 @@ import { PredictionsModule } from './predictions/predictions.module';
 import { EloModule } from './elo/elo.module';
 import { ExtraCompetitionsModule } from './extra-competitions/extra-competitions.module';
 import { StandingsModule } from './standings/standings.module';
+import { CalendarModule } from './calendar/calendar.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { StandingsModule } from './standings/standings.module';
     EloModule,
     ExtraCompetitionsModule,
     StandingsModule,
+    CalendarModule,
   ],
   controllers: [AppController],
   providers: [AppService],

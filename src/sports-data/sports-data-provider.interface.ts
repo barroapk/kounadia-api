@@ -17,6 +17,7 @@ export interface Match {
   leagueId?: number | null;
   continent?: string;
   country?: string;
+  matchday?: number | null;
 }
 
 export interface StandingRow {
@@ -40,4 +41,5 @@ export interface SportsDataProvider {
   getMatchById(id: number): Promise<Match>;
   getMatchesByDate(date: string): Promise<Match[]>;
   getStandings(competitionCode: string): Promise<StandingRow[]>;
+  getSeasonMatches(competitionCode: string): Promise<Match[]>;
 }
