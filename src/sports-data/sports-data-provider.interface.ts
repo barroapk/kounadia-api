@@ -18,6 +18,8 @@ export interface Match {
   continent?: string;
   country?: string;
   matchday?: number | null;
+  venue?: string | null;
+  referee?: string | null;
 }
 
 export interface StandingRow {

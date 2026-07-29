@@ -38,6 +38,8 @@ export class FootballDataProvider implements SportsDataProvider {
       continent: HIERARCHY_BY_FOOTBALL_DATA_CODE[m.competition?.code]?.continent ?? 'Autre',
       country: HIERARCHY_BY_FOOTBALL_DATA_CODE[m.competition?.code]?.country ?? 'Autre',
       matchday: m.matchday ?? null,
+      venue: m.venue ?? null,
+      referee: m.referees?.[0]?.name ?? null,
     };
   }
 
