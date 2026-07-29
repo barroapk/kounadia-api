@@ -96,9 +96,10 @@ export class FootballDataProvider implements SportsDataProvider {
       .filter((m) => m.utcDate.startsWith(date));
   }
 
-  async getStandings(competitionCode: string): Promise<StandingRow[]> {
+  async getStandings(competitionCode: string, season?: string): Promise<StandingRow[]> {
+    const seasonParam = season ? `?season=${season}` : '';
     const response = await firstValueFrom(
-      this.http.get(`${this.baseUrl}/competitions/${competitionCode}/standings`, {
+      this.http.get(`${this.baseUrl}/competitions/${competitionCode}/standings${seasonParam}`, {
         headers: this.headers,
       }),
     );

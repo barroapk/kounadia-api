@@ -40,6 +40,6 @@ export interface SportsDataProvider {
   getRecentFinishedMatches(days: number): Promise<Match[]>;
   getMatchById(id: number): Promise<Match>;
   getMatchesByDate(date: string): Promise<Match[]>;
-  getStandings(competitionCode: string): Promise<StandingRow[]>;
+  getStandings(competitionCode: string, season?: string): Promise<StandingRow[]>;
   getSeasonMatches(competitionCode: string): Promise<Match[]>;
 }
