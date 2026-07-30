@@ -113,12 +113,32 @@ export class ExtraCompetitionsService {
     }
   }
 
+  private sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Traite les compétitions par lots de 5 en parallèle, avec une pause entre
+   * chaque lot, pour rester sous la limite de requêtes par minute d'API-Football
+   * (distincte du quota journalier — un envoi de 40 appels simultanés la dépasse).
+   */
   async getMatchesForDate(date: string): Promise<Match[]> {
-    const results = await Promise.all(
-      EXTRA_COMPETITIONS.map((c) =>
-        this.fetchLeagueForDate(c.leagueId, c.currentSeason, c.name, date),
-      ),
-    );
-    return results.flat();
+    const CONCURRENCY = 5;
+    const PAUSE_BETWEEN_BATCHES_MS = 1200;
+    const allMatches: Match[] = [];
+
+    for (let i = 0; i < EXTRA_COMPETITIONS.length; i += CONCURRENCY) {
+      const batch = EXTRA_COMPETITIONS.slice(i, i + CONCURRENCY);
+      const batchResults = await Promise.all(
+        batch.map((c) => this.fetchLeagueForDate(c.leagueId, c.currentSeason, c.name, date)),
+      );
+      allMatches.push(...batchResults.flat());
+
+      if (i + CONCURRENCY < EXTRA_COMPETITIONS.length) {
+        await this.sleep(PAUSE_BETWEEN_BATCHES_MS);
+      }
+    }
+
+    return allMatches;
   }
 }

@@ -5,11 +5,21 @@ import { firstValueFrom } from 'rxjs';
 import { SupabaseService } from '../supabase/supabase.service';
 
 const CACHE_DAYS = 30;
+const DETAIL_CACHE_MS = 5 * 60 * 1000; // 5 minutes, une seule règle simple pour stats/lineups/fixtureId
 
 export interface LiveMinuteInfo {
   homeTeam: string;
   awayTeam: string;
   label: string;
+}
+
+export interface FixtureInfo {
+  homeTeam: string;
+  awayTeam: string;
+  utcDate: string;
+  status: string;
+  venue: string | null;
+  referee: string | null;
 }
 
 const COMMON_PREFIXES_SUFFIXES = [
@@ -22,10 +32,24 @@ const TEAM_CANONICAL: Record<string, string> = {
   'atleticomineiro': 'atleticomg',
 };
 
+const STATUS_MAP: Record<string, string> = {
+  NS: 'TIMED', TBD: 'TIMED',
+  '1H': 'IN_PLAY', '2H': 'IN_PLAY', ET: 'IN_PLAY', BT: 'IN_PLAY', P: 'IN_PLAY', LIVE: 'IN_PLAY',
+  HT: 'PAUSED',
+  FT: 'FINISHED', AET: 'FINISHED', PEN: 'FINISHED', AWD: 'FINISHED', WO: 'FINISHED',
+  PST: 'POSTPONED', SUSP: 'SUSPENDED', ABD: 'SUSPENDED', CANC: 'CANCELLED',
+};
+
 @Injectable()
 export class ApiFootballService {
   private readonly logger = new Logger(ApiFootballService.name);
   private readonly baseUrl = 'https://v3.football.api-sports.io';
+
+  private fixtureIdCache = new Map<string, { id: number | null; expiresAt: number }>();
+  private statsCache = new Map<number, { data: any; expiresAt: number }>();
+  private lineupsCache = new Map<number, { data: any; expiresAt: number }>();
+  private fixtureInfoCache = new Map<number, { data: FixtureInfo | null; expiresAt: number }>();
+  private eventsCache = new Map<number, { data: any[] | null; expiresAt: number }>();
 
   constructor(
     private http: HttpService,
@@ -34,9 +58,7 @@ export class ApiFootballService {
   ) {}
 
   private get headers() {
-    return {
-      'x-apisports-key': this.config.get<string>('API_FOOTBALL_KEY'),
-    };
+    return { 'x-apisports-key': this.config.get<string>('API_FOOTBALL_KEY') };
   }
 
   async searchTeam(teamName: string): Promise<number> {
@@ -82,8 +104,7 @@ export class ApiFootballService {
 
     if (cached) {
       const ageDays =
-        (Date.now() - new Date(cached.fetched_at).getTime()) /
-        (1000 * 60 * 60 * 24);
+        (Date.now() - new Date(cached.fetched_at).getTime()) / (1000 * 60 * 60 * 24);
       if (ageDays < CACHE_DAYS) return cached.data;
     }
 
@@ -167,11 +188,7 @@ export class ApiFootballService {
     }));
   }
 
-  findMinuteFor(
-    liveMinutes: LiveMinuteInfo[],
-    homeTeam: string,
-    awayTeam: string,
-  ): string | null {
+  findMinuteFor(liveMinutes: LiveMinuteInfo[], homeTeam: string, awayTeam: string): string | null {
     const nHome = this.canonicalize(homeTeam);
     const nAway = this.canonicalize(awayTeam);
 
@@ -186,11 +203,193 @@ export class ApiFootballService {
 
     if (!match) {
       this.logger.warn(
-        `Aucune correspondance pour "${homeTeam}" vs "${awayTeam}" (canonique: ${nHome}/${nAway}). ` +
-        `Matchs en direct disponibles: ${liveMinutes.map((m) => `${m.homeTeam} vs ${m.awayTeam}`).join(' | ')}`,
+        `Aucune correspondance pour "${homeTeam}" vs "${awayTeam}" (canonique: ${nHome}/${nAway}).`,
       );
     }
 
     return match?.label ?? null;
+  }
+
+  /**
+   * Récupère les infos de base d'un match dont l'ID est déjà un fixture ID API-Football
+   * (cas des 51 compétitions supplémentaires, où notre Match.id = fixture.id directement).
+   */
+  async getFixtureById(fixtureId: number): Promise<FixtureInfo | null> {
+    const cached = this.fixtureInfoCache.get(fixtureId);
+    const now = Date.now();
+    if (cached && cached.expiresAt > now) return cached.data;
+
+    try {
+      const response = await firstValueFrom(
+        this.http.get(`${this.baseUrl}/fixtures`, {
+          headers: this.headers,
+          params: { id: fixtureId },
+        }),
+      );
+      const f = response.data.response[0];
+      if (!f) {
+        this.fixtureInfoCache.set(fixtureId, { data: null, expiresAt: now + DETAIL_CACHE_MS });
+        return null;
+      }
+
+      const data: FixtureInfo = {
+        homeTeam: f.teams.home.name,
+        awayTeam: f.teams.away.name,
+        utcDate: f.fixture.date,
+        status: STATUS_MAP[f.fixture.status.short] ?? f.fixture.status.short,
+        venue: f.fixture.venue?.name ?? null,
+        referee: f.fixture.referee ?? null,
+      };
+
+      this.fixtureInfoCache.set(fixtureId, { data, expiresAt: now + DETAIL_CACHE_MS });
+      return data;
+    } catch (error) {
+      this.logger.warn(`getFixtureById échec (${fixtureId}): ${error.message}`);
+      return cached?.data ?? null;
+    }
+  }
+
+  /**
+   * Pour un match dont l'ID vient de football-data.org : cherche l'ID de fixture
+   * correspondant côté API-Football, par date + noms d'équipes canonicalisés.
+   */
+  async findFixtureId(homeTeam: string, awayTeam: string, utcDate: string): Promise<number | null> {
+    const dateOnly = utcDate.slice(0, 10);
+    const cacheKey = `${homeTeam}|${awayTeam}|${dateOnly}`;
+    const cached = this.fixtureIdCache.get(cacheKey);
+    const now = Date.now();
+    if (cached && cached.expiresAt > now) return cached.id;
+
+    try {
+      const response = await firstValueFrom(
+        this.http.get(`${this.baseUrl}/fixtures`, {
+          headers: this.headers,
+          params: { date: dateOnly },
+        }),
+      );
+
+      const nHome = this.canonicalize(homeTeam);
+      const nAway = this.canonicalize(awayTeam);
+      const match = response.data.response.find((f: any) => {
+        const mHome = this.canonicalize(f.teams.home.name);
+        const mAway = this.canonicalize(f.teams.away.name);
+        return (
+          (mHome.includes(nHome) || nHome.includes(mHome)) &&
+          (mAway.includes(nAway) || nAway.includes(mAway))
+        );
+      });
+
+      const id = match?.fixture?.id ?? null;
+      this.fixtureIdCache.set(cacheKey, { id, expiresAt: now + DETAIL_CACHE_MS });
+      return id;
+    } catch (error) {
+      this.logger.warn(`findFixtureId échec: ${error.message}`);
+      return null;
+    }
+  }
+
+  /** Toutes les statistiques que l'API renvoie réellement, sans liste figée de notre part. */
+  async getMatchStatistics(fixtureId: number): Promise<{ home: Record<string, any>; away: Record<string, any> } | null> {
+    const cached = this.statsCache.get(fixtureId);
+    const now = Date.now();
+    if (cached && cached.expiresAt > now) return cached.data;
+
+    try {
+      const response = await firstValueFrom(
+        this.http.get(`${this.baseUrl}/fixtures/statistics`, {
+          headers: this.headers,
+          params: { fixture: fixtureId },
+        }),
+      );
+      const raw = response.data.response;
+      if (!raw || raw.length < 2) return null;
+
+      const format = (entry: any) => {
+        const stats: Record<string, any> = {};
+        for (const s of entry.statistics) stats[s.type] = s.value;
+        return stats;
+      };
+
+      const data = { home: format(raw[0]), away: format(raw[1]) };
+      this.statsCache.set(fixtureId, { data, expiresAt: now + DETAIL_CACHE_MS });
+      return data;
+    } catch (error) {
+      this.logger.warn(`getMatchStatistics échec (${fixtureId}): ${error.message}`);
+      return cached?.data ?? null;
+    }
+  }
+
+  /** Buts, cartons, remplacements — dans l'ordre chronologique fourni par l'API. */
+  async getMatchEvents(fixtureId: number): Promise<any[] | null> {
+    const cached = this.eventsCache.get(fixtureId);
+    const now = Date.now();
+    if (cached && cached.expiresAt > now) return cached.data;
+
+    try {
+      const response = await firstValueFrom(
+        this.http.get(`${this.baseUrl}/fixtures/events`, {
+          headers: this.headers,
+          params: { fixture: fixtureId },
+        }),
+      );
+      const raw = response.data.response;
+      if (!raw || raw.length === 0) return null;
+
+      const data = raw.map((e: any) => ({
+        minute: e.time?.elapsed ?? null,
+        extraMinute: e.time?.extra ?? null,
+        type: e.type ?? null,
+        detail: e.detail ?? null,
+        team: e.team?.name ?? null,
+        player: e.player?.name ?? null,
+        assist: e.assist?.name ?? null,
+      }));
+
+      this.eventsCache.set(fixtureId, { data, expiresAt: now + DETAIL_CACHE_MS });
+      return data;
+    } catch (error) {
+      this.logger.warn(`getMatchEvents échec (${fixtureId}): ${error.message}`);
+      return cached?.data ?? null;
+    }
+  }
+
+  /** Compositions confirmées uniquement — jamais de composition "probable" inventée. */
+  async getLineups(fixtureId: number): Promise<any[] | null> {
+    const cached = this.lineupsCache.get(fixtureId);
+    const now = Date.now();
+    if (cached && cached.expiresAt > now) return cached.data;
+
+    try {
+      const response = await firstValueFrom(
+        this.http.get(`${this.baseUrl}/fixtures/lineups`, {
+          headers: this.headers,
+          params: { fixture: fixtureId },
+        }),
+      );
+      const raw = response.data.response;
+      if (!raw || raw.length === 0) return null;
+
+      const data = raw.map((entry: any) => ({
+        team: entry.team?.name ?? null,
+        formation: entry.formation ?? null,
+        coach: entry.coach?.name ?? null,
+        startXI: (entry.startXI ?? []).map((p: any) => ({
+          name: p.player?.name ?? null,
+          number: p.player?.number ?? null,
+          position: p.player?.pos ?? null,
+        })),
+        substitutes: (entry.substitutes ?? []).map((p: any) => ({
+          name: p.player?.name ?? null,
+          number: p.player?.number ?? null,
+          position: p.player?.pos ?? null,
+        })),
+      }));
+
+      this.lineupsCache.set(fixtureId, { data, expiresAt: now + DETAIL_CACHE_MS });
+      return data;
+    } catch (error) {
+      this.logger.warn(`getLineups échec (${fixtureId}): ${error.message}`);
+      return cached?.data ?? null;
+    }
   }
 }
