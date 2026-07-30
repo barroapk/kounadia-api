@@ -67,17 +67,23 @@ export class CalendarService {
       const live = dayMatches.filter((m) => LIVE_STATUSES.includes(m.status)).length;
       const scheduled = dayMatches.length - finished - live;
 
+      // Un match POSTPONED/SUSPENDED ne doit jamais empêcher une journée d'être
+      // considérée comme "terminée" pour la détection de la journée en cours :
+      // il peut rester des mois sans être rejoué (cf. cas Flamengo-Mirassol BSA).
+      const stalled = dayMatches.filter((m) => ['POSTPONED', 'SUSPENDED', 'CANCELLED'].includes(m.status)).length;
+      const effectiveFinished = finished + stalled;
+
       return {
         matchday: day,
         matches: dayMatches,
-        allFinished: finished === dayMatches.length,
+        allFinished: effectiveFinished === dayMatches.length,
         summary: { totalMatches: dayMatches.length, finished, live, scheduled },
       };
     });
 
     // Priorité : une journée avec un match en direct > une journée avec des matchs à venir > la dernière (fin de saison).
     const liveGroup = matchdays.find((g) => g.summary.live > 0);
-    const upcomingGroup = matchdays.find((g) => g.summary.scheduled > 0);
+    const upcomingGroup = matchdays.find((g) => !g.allFinished && g.summary.scheduled > 0);
     const currentGroup = liveGroup ?? upcomingGroup ?? matchdays[matchdays.length - 1];
     const currentMatchday = currentGroup?.matchday ?? 1;
 
