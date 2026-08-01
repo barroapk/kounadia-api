@@ -16,6 +16,9 @@ export interface LiveMinuteInfo {
 export interface FixtureInfo {
   homeTeam: string;
   awayTeam: string;
+  competition: string;
+  homeScore: number | null;
+  awayScore: number | null;
   utcDate: string;
   status: string;
   venue: string | null;
@@ -235,6 +238,9 @@ export class ApiFootballService {
       const data: FixtureInfo = {
         homeTeam: f.teams.home.name,
         awayTeam: f.teams.away.name,
+        competition: f.league?.name ?? '',
+        homeScore: f.goals?.home ?? null,
+        awayScore: f.goals?.away ?? null,
         utcDate: f.fixture.date,
         status: STATUS_MAP[f.fixture.status.short] ?? f.fixture.status.short,
         venue: f.fixture.venue?.name ?? null,

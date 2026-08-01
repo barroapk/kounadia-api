@@ -7,6 +7,9 @@ import { TeamFormService } from '../team-form/team-form.service';
 interface BaseMatchInfo {
   homeTeam: string;
   awayTeam: string;
+  competition: string;
+  homeScore: number | null;
+  awayScore: number | null;
   utcDate: string;
   status: string;
   venue: string | null;
@@ -43,6 +46,9 @@ export class AnalyzerService {
       matchId,
       homeTeam: matchInfo.homeTeam,
       awayTeam: matchInfo.awayTeam,
+      competition: matchInfo.competition,
+      homeScore: matchInfo.homeScore,
+      awayScore: matchInfo.awayScore,
       utcDate: matchInfo.utcDate,
       status: matchInfo.status,
       venue: matchInfo.venue,
@@ -62,6 +68,9 @@ export class AnalyzerService {
       return {
         homeTeam: match.homeTeam,
         awayTeam: match.awayTeam,
+        competition: match.competition,
+        homeScore: match.homeScore ?? null,
+        awayScore: match.awayScore ?? null,
         utcDate: match.utcDate,
         status: match.status,
         venue: match.venue ?? null,
