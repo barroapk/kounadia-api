@@ -158,7 +158,7 @@ export class ApiFootballService {
     }
 
     await this.supabase.client.from('head_to_head_cache').upsert(
-      { team1_id: team1Id, team2_id: team2Id, data: summary, fetched_at: new Date().toISOString() },
+      { team1_id: cacheKeyA, team2_id: cacheKeyB, data: summary, fetched_at: new Date().toISOString() },
       { onConflict: 'team1_id,team2_id' },
     );
 
