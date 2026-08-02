@@ -96,33 +96,52 @@ export class ApiFootballService {
   async getHeadToHead(teamAName: string, teamBName: string) {
     const idA = await this.searchTeam(teamAName);
     const idB = await this.searchTeam(teamBName);
-    const [team1Id, team2Id] = [idA, idB].sort((a, b) => a - b);
+
+    // Le tri ne sert QUE pour la clé de cache (ordre stable, peu importe qui
+    // est domicile aujourd'hui) — jamais pour attribuer les victoires.
+    const cacheKeyA = Math.min(idA, idB);
+    const cacheKeyB = Math.max(idA, idB);
 
     const { data: cached } = await this.supabase.client
       .from('head_to_head_cache')
       .select('*')
-      .eq('team1_id', team1Id)
-      .eq('team2_id', team2Id)
+      .eq('team1_id', cacheKeyA)
+      .eq('team2_id', cacheKeyB)
       .maybeSingle();
 
     if (cached) {
       const ageDays =
         (Date.now() - new Date(cached.fetched_at).getTime()) / (1000 * 60 * 60 * 24);
-      if (ageDays < CACHE_DAYS) return cached.data;
+      if (ageDays < CACHE_DAYS) {
+        // Le cache est stocké selon cacheKeyA/cacheKeyB : si l'équipe demandée
+        // en premier (teamAName) n'a pas idA === cacheKeyA, il faut inverser
+        // les compteurs pour rester cohérent avec l'appel actuel.
+        const data = cached.data;
+        if (idA === cacheKeyA) return data;
+        return {
+          ...data,
+          teamA: teamAName,
+          teamB: teamBName,
+          teamAWins: data.teamBWins,
+          teamBWins: data.teamAWins,
+        };
+      }
     }
 
     const response = await firstValueFrom(
       this.http.get(`${this.baseUrl}/fixtures/headtohead`, {
         headers: this.headers,
-        params: { h2h: `${team1Id}-${team2Id}`, last: 10 },
+        params: { h2h: `${cacheKeyA}-${cacheKeyB}`, last: 10 },
       }),
     );
 
     const fixtures = response.data.response;
     const summary = {
       totalMatches: fixtures.length,
-      team1Wins: 0,
-      team2Wins: 0,
+      teamA: teamAName,
+      teamB: teamBName,
+      teamAWins: 0,
+      teamBWins: 0,
       draws: 0,
       lastMeetingDate: fixtures[0]?.fixture?.date ?? null,
     };
@@ -130,9 +149,9 @@ export class ApiFootballService {
     for (const f of fixtures) {
       const homeId = f.teams.home.id;
       if (f.teams.home.winner === true) {
-        homeId === team1Id ? summary.team1Wins++ : summary.team2Wins++;
+        homeId === idA ? summary.teamAWins++ : summary.teamBWins++;
       } else if (f.teams.away.winner === true) {
-        homeId === team1Id ? summary.team2Wins++ : summary.team1Wins++;
+        homeId === idA ? summary.teamBWins++ : summary.teamAWins++;
       } else {
         summary.draws++;
       }
