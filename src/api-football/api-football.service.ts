@@ -64,6 +64,16 @@ export class ApiFootballService {
     return { 'x-apisports-key': this.config.get<string>('API_FOOTBALL_KEY') };
   }
 
+  private async searchApiFootballByName(name: string): Promise<number | null> {
+    const response = await firstValueFrom(
+      this.http.get(`${this.baseUrl}/teams`, {
+        headers: this.headers,
+        params: { search: name },
+      }),
+    );
+    return response.data.response[0]?.team?.id ?? null;
+  }
+
   async searchTeam(teamName: string): Promise<number> {
     const { data: cached } = await this.supabase.client
       .from('team_mappings')
@@ -73,18 +83,39 @@ export class ApiFootballService {
 
     if (cached) return cached.api_football_id;
 
-    const response = await firstValueFrom(
-      this.http.get(`${this.baseUrl}/teams`, {
-        headers: this.headers,
-        params: { search: teamName },
-      }),
-    );
+    // 1. Recherche avec le nom exact reçu.
+    let id = await this.searchApiFootballByName(teamName);
 
-    if (!response.data.response.length) {
-      throw new Error(`Équipe introuvable : ${teamName}`);
+    // 2. Repli : recherche avec le nom nettoyé (accents/préfixes retirés),
+    // même logique déjà utilisée pour la minute en direct.
+    if (id === null) {
+      const normalized = this.canonicalize(teamName);
+      if (normalized && normalized !== teamName) {
+        id = await this.searchApiFootballByName(normalized);
+      }
     }
 
-    const id = response.data.response[0].team.id;
+    // Dernier recours : retirer le préfixe (SC, FC, CA...) et essayer
+    // chaque mot significatif jusqu'à trouver une correspondance.
+    if (id === null) {
+      const words = teamName
+        .replace(/^(SC|FC|CA|AC|CD|CF|EC|RB)\s+/i, '')
+        .split(' ')
+        .filter((word) => word.length > 3)
+        .sort((a, b) => b.length - a.length); // mots les plus discriminants d'abord
+
+      for (const word of words) {
+        id = await this.searchApiFootballByName(word);
+        if (id !== null) {
+          this.logger.warn(`Recherche fallback équipe: "${teamName}" trouvée via le mot "${word}" (id ${id})`);
+          break;
+        }
+      }
+    }
+
+    if (id === null) {
+      throw new Error(`Équipe introuvable : ${teamName}`);
+    }
 
     await this.supabase.client
       .from('team_mappings')
