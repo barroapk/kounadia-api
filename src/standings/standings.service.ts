@@ -4,6 +4,8 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { SPORTS_DATA_PROVIDER } from '../sports-data/sports-data.constants';
 import type { SportsDataProvider, StandingRow } from '../sports-data/sports-data-provider.interface';
+import { ApiFootballService } from '../api-football/api-football.service';
+import { EXTRA_COMPETITIONS } from '../config/extra-competitions';
 
 export interface SeasonInfo {
   startYear: string;
@@ -37,9 +39,60 @@ export class StandingsService {
     private sportsDataProvider: SportsDataProvider,
     private http: HttpService,
     private config: ConfigService,
+    private apiFootballService: ApiFootballService,
   ) {}
 
+  private async getApiFootballStandings(leagueId: number, season?: string): Promise<StandingsResponse> {
+    const competition = EXTRA_COMPETITIONS.find((c) => c.leagueId === leagueId);
+    const resolvedSeason = season ? Number(season) : competition?.currentSeason;
+
+    if (!resolvedSeason) {
+      throw new Error(`Saison inconnue pour la compétition ${leagueId}`);
+    }
+
+    const cacheKey = `af-${leagueId}-${resolvedSeason}`;
+    const cached = this.cache.get(cacheKey);
+    const now = Date.now();
+    if (cached && cached.expiresAt > now) {
+      return cached.data;
+    }
+
+    const result = await this.apiFootballService.getStandingsByLeagueId(leagueId, resolvedSeason);
+
+    const standings: StandingRow[] = (result?.standings ?? []).map((item: any) => ({
+      position: item.rank,
+      teamName: item.team.name,
+      teamCrest: item.team.logo ?? null,
+      playedGames: item.all.played,
+      won: item.all.win,
+      draw: item.all.draw,
+      lost: item.all.lose,
+      goalsFor: item.all.goals.for,
+      goalsAgainst: item.all.goals.against,
+      goalDifference: item.goalsDiff,
+      points: item.points,
+    }));
+
+    const response: StandingsResponse = {
+      competitionCode: String(leagueId),
+      competitionName: competition?.name ?? `League ${leagueId}`,
+      competitionEmblem: result?.emblem ?? null,
+      season: String(resolvedSeason),
+      availableSeasons: [],
+      totalTeams: standings.length,
+      lastUpdated: new Date().toISOString(),
+      standings,
+    };
+
+    this.cache.set(cacheKey, { data: response, expiresAt: now + this.CACHE_DURATION_MS });
+    return response;
+  }
+
   async getStandings(competitionCode: string, season?: string): Promise<StandingsResponse> {
+    if (/^\d+$/.test(competitionCode)) {
+      return this.getApiFootballStandings(Number(competitionCode), season);
+    }
+
     const cacheKey = `${competitionCode}-${season ?? 'current'}`;
     const cached = this.cache.get(cacheKey);
     const now = Date.now();

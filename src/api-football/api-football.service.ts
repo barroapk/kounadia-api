@@ -345,6 +345,27 @@ export class ApiFootballService {
   }
 
   /** Toutes les statistiques que l'API renvoie réellement, sans liste figée de notre part. */
+  async getStandingsByLeagueId(
+    leagueId: number,
+    season: number,
+  ): Promise<{ standings: any[]; emblem: string | null } | null> {
+    try {
+      const response = await firstValueFrom(
+        this.http.get(`${this.baseUrl}/standings`, {
+          headers: this.headers,
+          params: { league: leagueId, season },
+        }),
+      );
+      const league = response.data.response?.[0]?.league;
+      const standings = league?.standings?.[0];
+      if (!standings) return null;
+      return { standings, emblem: league?.logo ?? null };
+    } catch (error) {
+      this.logger.warn(`Classement indisponible pour league ${leagueId}: ${error.message}`);
+      return null;
+    }
+  }
+
   async getMatchStatistics(fixtureId: number): Promise<{ home: Record<string, any>; away: Record<string, any> } | null> {
     const cached = this.statsCache.get(fixtureId);
     const now = Date.now();
