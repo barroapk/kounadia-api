@@ -53,6 +53,7 @@ export class ApiFootballService {
   private lineupsCache = new Map<number, { data: any; expiresAt: number }>();
   private fixtureInfoCache = new Map<number, { data: FixtureInfo | null; expiresAt: number }>();
   private eventsCache = new Map<number, { data: any[] | null; expiresAt: number }>();
+  private calendarCache = new Map<string, { data: any[] | null; expiresAt: number }>();
 
   constructor(
     private http: HttpService,
@@ -363,6 +364,28 @@ export class ApiFootballService {
     } catch (error) {
       this.logger.warn(`Classement indisponible pour league ${leagueId}: ${error.message}`);
       return null;
+    }
+  }
+
+  async getCalendarByLeagueId(leagueId: number, season: number): Promise<any[] | null> {
+    const cacheKey = `${leagueId}-${season}`;
+    const cached = this.calendarCache.get(cacheKey);
+    const now = Date.now();
+    if (cached && cached.expiresAt > now) return cached.data;
+
+    try {
+      const response = await firstValueFrom(
+        this.http.get(`${this.baseUrl}/fixtures`, {
+          headers: this.headers,
+          params: { league: leagueId, season },
+        }),
+      );
+      const fixtures = response.data.response ?? [];
+      this.calendarCache.set(cacheKey, { data: fixtures, expiresAt: now + 6 * 60 * 60 * 1000 });
+      return fixtures;
+    } catch (error) {
+      this.logger.warn(`Calendrier indisponible pour league ${leagueId}: ${error.message}`);
+      return cached?.data ?? null;
     }
   }
 
