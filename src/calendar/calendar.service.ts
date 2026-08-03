@@ -54,10 +54,38 @@ export class CalendarService {
     private apiFootballService: ApiFootballService,
   ) {}
 
-  /** Extrait un numéro de journée depuis un round textuel quand c'est possible ("Regular Season - 12" -> 12). */
-  private extractMatchdayNumber(round: string): number | null {
-    const match = round.match(/(\d+)\s*$/);
-    return match ? parseInt(match[1], 10) : null;
+  // Hiérarchie fixe des rounds à élimination directe, du plus tôt au plus tard.
+  private static readonly KNOCKOUT_ORDER = [
+    'preliminary round', 'qualification round 1', 'qualification round 2', 'qualification round 3',
+    'play-offs', 'group stage', 'round of 32', 'round of 16', 'quarter-finals',
+    'semi-finals', 'third place', 'final',
+  ];
+
+  /**
+   * Construit une clé de tri fiable pour un round, sans dépendre de l'ordre
+   * des données API : préfixe de phase (Apertura, Clausura, Regular Season...)
+   * d'abord, puis numéro de journée si présent, puis position dans la
+   * hiérarchie fixe des rounds à élimination directe.
+   */
+  private buildRoundSortKey(round: string): [string, number] {
+    // Il faut tester D'ABORD si c'est un round à élimination directe :
+    // sinon "Apertura - Round of 16" est à tort lu comme "journée 16"
+    // par le test numérique (le "16" de "Round of 16" matche aussi).
+    const normalized = round.toLowerCase().trim();
+    const knockoutIndex = CalendarService.KNOCKOUT_ORDER.findIndex((k) => normalized.includes(k));
+
+    if (knockoutIndex >= 0) {
+      const prefixMatch = round.match(/^(.*?)[\s-]+(Round of|Quarter|Semi|Final|Third)/i);
+      const prefix = prefixMatch ? prefixMatch[1].trim() : round;
+      return [prefix, 1000 + knockoutIndex];
+    }
+
+    const numberMatch = round.match(/^(.*?)[\s-]*(\d+)\s*$/);
+    if (numberMatch) {
+      return [numberMatch[1].trim(), parseInt(numberMatch[2], 10)];
+    }
+
+    return [round, 9999];
   }
 
   private buildMatchdayGroups(matches: Array<Match & { roundLabel?: string }>): {
@@ -127,22 +155,21 @@ export class CalendarService {
     }
 
     const hierarchy = HIERARCHY_BY_LEAGUE_ID[leagueId];
-    let sequentialCounter = 0;
+
+    // Ordre logique (métier) des rounds distincts, pas dépendant des données API.
+    const uniqueRounds = Array.from(new Set(fixtures.map((f: any) => f.league?.round ?? '')));
+    const orderedRounds = uniqueRounds.sort((a, b) => {
+      const [prefixA, numA] = this.buildRoundSortKey(a);
+      const [prefixB, numB] = this.buildRoundSortKey(b);
+      if (prefixA !== prefixB) return prefixA.localeCompare(prefixB);
+      return numA - numB;
+    });
     const roundToNumber = new Map<string, number>();
+    orderedRounds.forEach((round, index) => roundToNumber.set(round, index + 1));
 
     const matches = fixtures.map((f: any) => {
       const round: string = f.league?.round ?? '';
-      let matchdayNum = this.extractMatchdayNumber(round);
-
-      // Pas de numéro extractible (ex: "Round of 16") : on attribue un numéro
-      // séquentiel stable par round, pour garder un ordre cohérent d'affichage.
-      if (matchdayNum === null) {
-        if (!roundToNumber.has(round)) {
-          sequentialCounter += 1;
-          roundToNumber.set(round, sequentialCounter);
-        }
-        matchdayNum = roundToNumber.get(round)!;
-      }
+      const matchdayNum = roundToNumber.get(round)!;
 
       const status = f.fixture.status;
       let liveMinuteLabel: string | null = null;
