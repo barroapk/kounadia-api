@@ -358,8 +358,13 @@ export class ApiFootballService {
         }),
       );
       const league = response.data.response?.[0]?.league;
-      const standings = league?.standings?.[0];
-      if (!standings) return null;
+
+      // API-Football renvoie un tableau par groupe (Group A, Group B...)
+      // On conserve tous les groupes au lieu de prendre uniquement standings[0].
+      const standings = (league?.standings ?? []).flat();
+
+      if (!standings.length) return null;
+
       return { standings, emblem: league?.logo ?? null };
     } catch (error) {
       this.logger.warn(`Classement indisponible pour league ${leagueId}: ${error.message}`);

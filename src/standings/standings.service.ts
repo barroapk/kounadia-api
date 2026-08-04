@@ -61,6 +61,7 @@ export class StandingsService {
 
     const standings: StandingRow[] = (result?.standings ?? []).map((item: any) => ({
       position: item.rank,
+      group: item.group ?? undefined,
       teamName: item.team.name,
       teamCrest: item.team.logo ?? null,
       playedGames: item.all.played,

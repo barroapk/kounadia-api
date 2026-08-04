@@ -24,6 +24,7 @@ export interface Match {
 
 export interface StandingRow {
   position: number;
+  group?: string;
   teamName: string;
   teamCrest: string | null;
   playedGames: number;
