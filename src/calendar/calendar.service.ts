@@ -55,37 +55,58 @@ export class CalendarService {
   ) {}
 
   // Hiérarchie fixe des rounds à élimination directe, du plus tôt au plus tard.
-  private static readonly KNOCKOUT_ORDER = [
-    'preliminary round', 'qualification round 1', 'qualification round 2', 'qualification round 3',
-    'play-offs', 'group stage', 'round of 32', 'round of 16', 'quarter-finals',
-    'semi-finals', 'third place', 'final',
+  // Chaque motif est cherché dans l'ordre : le premier qui correspond gagne.
+  // "Group Stage" n'est volontairement PAS ici : ses journées ("Group Stage - 1",
+  // "- 2"...) doivent passer par le chemin numérique pour garder leur propre ordre,
+  // pas toutes recevoir la même clé de tri.
+  private static readonly KNOCKOUT_ORDER: Array<{ pattern: RegExp; order: number }> = [
+    { pattern: /preliminary round/i, order: 0 },
+    { pattern: /qualification round 1/i, order: 1 },
+    { pattern: /qualification round 2/i, order: 2 },
+    { pattern: /qualification round 3/i, order: 3 },
+    { pattern: /play-?offs?/i, order: 4 },
+    { pattern: /round of 32/i, order: 6 },
+    { pattern: /round of 16/i, order: 7 },
+    { pattern: /quarter-?finals?/i, order: 8 },
+    { pattern: /semi-?finals?/i, order: 9 },
+    { pattern: /3rd place|third place/i, order: 10 },
+    { pattern: /\bfinal\b/i, order: 11 },
   ];
 
   /**
-   * Construit une clé de tri fiable pour un round, sans dépendre de l'ordre
-   * des données API : préfixe de phase (Apertura, Clausura, Regular Season...)
-   * d'abord, puis numéro de journée si présent, puis position dans la
-   * hiérarchie fixe des rounds à élimination directe.
+   * Construit une clé de tri numérique unique et fiable pour un round.
+   * Ne dépend JAMAIS d'une comparaison de texte (localeCompare) : uniquement
+   * de nombres, pour que l'ordre soit toujours prévisible quel que soit le
+   * format exact des libellés fournis par l'API.
+   *
+   * Étape 1 : les journées numériques d'une phase précise ("Apertura - 5",
+   * "Group Stage - 2"...) sont regroupées par leur préfixe de phase, avec
+   * un numéro de base par préfixe (multiples de 100) + le numéro de journée.
+   * Étape 2 : les rounds à élimination directe reçoivent un rang fixe très
+   * élevé (10000+), toujours après toutes les journées numériques.
    */
-  private buildRoundSortKey(round: string): [string, number] {
-    // Il faut tester D'ABORD si c'est un round à élimination directe :
-    // sinon "Apertura - Round of 16" est à tort lu comme "journée 16"
-    // par le test numérique (le "16" de "Round of 16" matche aussi).
-    const normalized = round.toLowerCase().trim();
-    const knockoutIndex = CalendarService.KNOCKOUT_ORDER.findIndex((k) => normalized.includes(k));
-
-    if (knockoutIndex >= 0) {
-      const prefixMatch = round.match(/^(.*?)[\s-]+(Round of|Quarter|Semi|Final|Third)/i);
-      const prefix = prefixMatch ? prefixMatch[1].trim() : round;
-      return [prefix, 1000 + knockoutIndex];
+  private buildRoundSortKey(round: string, phaseBaseOrder: Map<string, number>, defaultPhase: string): number {
+    for (const { pattern, order } of CalendarService.KNOCKOUT_ORDER) {
+      if (pattern.test(round)) {
+        // Rattache ce round à élimination directe à sa phase (Apertura,
+        // Clausura...) si un préfixe explicite existe avant le nom du round,
+        // sinon à l'unique phase de la compétition (cas CAN, Coupe du monde...).
+        const prefixMatch = round.match(/^(.+?)\s*-\s*(preliminary|qualification|play-?offs?|round of|quarter|semi|3rd|third|final)/i);
+        const prefix = prefixMatch ? prefixMatch[1].trim() : defaultPhase;
+        const base = phaseBaseOrder.get(prefix) ?? phaseBaseOrder.get(defaultPhase) ?? 1;
+        return base * 1000 + 100 + order;
+      }
     }
 
     const numberMatch = round.match(/^(.*?)[\s-]*(\d+)\s*$/);
     if (numberMatch) {
-      return [numberMatch[1].trim(), parseInt(numberMatch[2], 10)];
+      const prefix = numberMatch[1].trim();
+      const number = parseInt(numberMatch[2], 10);
+      const base = phaseBaseOrder.get(prefix) ?? 0;
+      return base * 1000 + number;
     }
 
-    return [round, 9999];
+    return 999999; // Round non reconnu : toujours en tout dernier.
   }
 
   private buildMatchdayGroups(matches: Array<Match & { roundLabel?: string }>): {
@@ -158,11 +179,29 @@ export class CalendarService {
 
     // Ordre logique (métier) des rounds distincts, pas dépendant des données API.
     const uniqueRounds = Array.from(new Set(fixtures.map((f: any) => f.league?.round ?? '')));
+    // Attribue un rang de base à chaque préfixe de phase numérique distinct
+    // (Apertura, Clausura, Group Stage...), dans leur ordre d'apparition,
+    // pour que chaque phase reste groupée avant les rounds à élimination directe.
+    const numericPrefixes: string[] = [];
+    for (const round of uniqueRounds) {
+      const m = (round as string).match(/^(.*?)[\s-]*(\d+)\s*$/);
+      if (m) {
+        const prefix = m[1].trim();
+        if (!numericPrefixes.includes(prefix)) numericPrefixes.push(prefix);
+      }
+    }
+    const phaseBaseOrder = new Map<string, number>();
+    numericPrefixes.forEach((prefix, index) => phaseBaseOrder.set(prefix, index + 1));
+
+    // S'il n'y a qu'une seule phase numérique (ex: "Group Stage" pour la CAN),
+    // les rounds à élimination directe sans préfixe lui sont rattachés.
+    const defaultPhase = numericPrefixes[0] ?? '';
+
     const orderedRounds = uniqueRounds.sort((a, b) => {
-      const [prefixA, numA] = this.buildRoundSortKey(a);
-      const [prefixB, numB] = this.buildRoundSortKey(b);
-      if (prefixA !== prefixB) return prefixA.localeCompare(prefixB);
-      return numA - numB;
+      return (
+        this.buildRoundSortKey(a, phaseBaseOrder, defaultPhase) -
+        this.buildRoundSortKey(b, phaseBaseOrder, defaultPhase)
+      );
     });
     const roundToNumber = new Map<string, number>();
     orderedRounds.forEach((round, index) => roundToNumber.set(round, index + 1));
