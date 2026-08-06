@@ -73,14 +73,22 @@ export class CalendarService {
   // "Group Stage" n'est volontairement PAS ici : ses journées ("Group Stage - 1",
   // "- 2"...) doivent passer par le chemin numérique pour garder leur propre ordre,
   // pas toutes recevoir la même clé de tri.
+  // Liste volontairement large : API-Football utilise plusieurs formulations
+  // différentes selon la compétition pour désigner le même tour (ex: "Round
+  // of 16" / "8th Finals", "1st Round" / "First Round"...). L'ordre des
+  // entrées compte : la première qui correspond gagne, donc les motifs les
+  // plus spécifiques doivent être placés avant les plus génériques.
   private static readonly KNOCKOUT_ORDER: Array<{ pattern: RegExp; order: number }> = [
     { pattern: /preliminary round/i, order: 0 },
     { pattern: /qualification round 1/i, order: 1 },
     { pattern: /qualification round 2/i, order: 2 },
     { pattern: /qualification round 3/i, order: 3 },
-    { pattern: /play-?offs?/i, order: 4 },
-    { pattern: /round of 32/i, order: 6 },
-    { pattern: /round of 16/i, order: 7 },
+    { pattern: /qualifying round|qualification round/i, order: 1 },
+    { pattern: /\b(1st|first)\s*round\b/i, order: 2 },
+    { pattern: /\b(2nd|second)\s*round\b/i, order: 3 },
+    { pattern: /knockout round play-?offs|play-?offs?/i, order: 4 },
+    { pattern: /round of 32|16th finals/i, order: 6 },
+    { pattern: /round of 16|8th finals/i, order: 7 },
     { pattern: /quarter-?finals?/i, order: 8 },
     { pattern: /semi-?finals?/i, order: 9 },
     { pattern: /3rd place|third place/i, order: 10 },
@@ -105,7 +113,9 @@ export class CalendarService {
         // Rattache ce round à élimination directe à sa phase (Apertura,
         // Clausura...) si un préfixe explicite existe avant le nom du round,
         // sinon à l'unique phase de la compétition (cas CAN, Coupe du monde...).
-        const prefixMatch = round.match(/^(.+?)\s*-\s*(preliminary|qualification|play-?offs?|round of|quarter|semi|3rd|third|final)/i);
+        const prefixMatch = round.match(
+          /^(.+?)\s*-\s*(preliminary|qualifying|qualification|knockout|play-?offs?|(1st|first)\s*round|(2nd|second)\s*round|round of|16th|8th|quarter|semi|3rd|third|final)/i,
+        );
         const prefix = prefixMatch ? prefixMatch[1].trim() : defaultPhase;
         const base = phaseBaseOrder.get(prefix) ?? phaseBaseOrder.get(defaultPhase) ?? 1;
         return base * 1000 + 100 + order;
@@ -193,31 +203,24 @@ export class CalendarService {
 
     const hierarchy = HIERARCHY_BY_LEAGUE_ID[leagueId];
 
-    // Ordre logique (métier) des rounds distincts, pas dépendant des données API.
+    // Ordre des rounds basé sur leur vraie date de premier match, pas sur une
+    // devinette du texte : un même mot ("1st Round") peut désigner un tour de
+    // qualification (avant la phase principale) dans une compétition, et un
+    // tour à élimination directe (après) dans une autre — impossible à
+    // distinguer de façon fiable par le vocabulaire seul. La date réelle,
+    // elle, ne ment jamais sur l'ordre chronologique des phases.
     const uniqueRounds = Array.from(new Set(fixtures.map((f: any) => f.league?.round ?? '')));
-    // Attribue un rang de base à chaque préfixe de phase numérique distinct
-    // (Apertura, Clausura, Group Stage...), dans leur ordre d'apparition,
-    // pour que chaque phase reste groupée avant les rounds à élimination directe.
-    const numericPrefixes: string[] = [];
-    for (const round of uniqueRounds) {
-      const m = (round as string).match(/^(.*?)[\s-]*(\d+)\s*$/);
-      if (m) {
-        const prefix = m[1].trim();
-        if (!numericPrefixes.includes(prefix)) numericPrefixes.push(prefix);
+    const roundEarliestDate = new Map<string, number>();
+    for (const f of fixtures) {
+      const round: string = f.league?.round ?? '';
+      const ts = new Date(f.fixture.date).getTime();
+      if (!roundEarliestDate.has(round) || ts < roundEarliestDate.get(round)!) {
+        roundEarliestDate.set(round, ts);
       }
     }
-    const phaseBaseOrder = new Map<string, number>();
-    numericPrefixes.forEach((prefix, index) => phaseBaseOrder.set(prefix, index + 1));
-
-    // S'il n'y a qu'une seule phase numérique (ex: "Group Stage" pour la CAN),
-    // les rounds à élimination directe sans préfixe lui sont rattachés.
-    const defaultPhase = numericPrefixes[0] ?? '';
 
     const orderedRounds = uniqueRounds.sort((a, b) => {
-      return (
-        this.buildRoundSortKey(a, phaseBaseOrder, defaultPhase) -
-        this.buildRoundSortKey(b, phaseBaseOrder, defaultPhase)
-      );
+      return roundEarliestDate.get(a)! - roundEarliestDate.get(b)!;
     });
     const roundToNumber = new Map<string, number>();
     orderedRounds.forEach((round, index) => roundToNumber.set(round, index + 1));
