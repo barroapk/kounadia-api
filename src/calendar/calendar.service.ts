@@ -1,4 +1,7 @@
 import { Injectable, Inject } from '@nestjs/common';
+import { HttpService } from '@nestjs/axios';
+import { ConfigService } from '@nestjs/config';
+import { firstValueFrom } from 'rxjs';
 import { SPORTS_DATA_PROVIDER } from '../sports-data/sports-data.constants';
 import type { SportsDataProvider, Match } from '../sports-data/sports-data-provider.interface';
 import { ApiFootballService } from '../api-football/api-football.service';
@@ -30,8 +33,15 @@ export interface MatchdayGroup {
   summary: MatchdaySummary;
 }
 
+export interface CalendarSeasonInfo {
+  value: string;
+  label: string;
+}
+
 export interface CalendarResponse {
   competitionCode: string;
+  season?: string;
+  availableSeasons?: CalendarSeasonInfo[];
   currentMatchday: number;
   currentRoundLabel?: string;
   totalMatchdays: number;
@@ -48,10 +58,14 @@ export class CalendarService {
   private cache = new Map<string, CacheEntry>();
   private readonly CACHE_DURATION_MS = 6 * 60 * 60 * 1000; // 6 heures
 
+  private readonly footballDataBaseUrl = 'https://api.football-data.org/v4';
+
   constructor(
     @Inject(SPORTS_DATA_PROVIDER)
     private sportsDataProvider: SportsDataProvider,
     private apiFootballService: ApiFootballService,
+    private http: HttpService,
+    private config: ConfigService,
   ) {}
 
   // Hiérarchie fixe des rounds à élimination directe, du plus tôt au plus tard.
@@ -248,11 +262,42 @@ export class CalendarService {
 
     return {
       competitionCode: String(leagueId),
+      season: String(targetSeason),
+      availableSeasons: this.getApiFootballSeasons(competition.currentSeason),
       currentMatchday,
       currentRoundLabel,
       totalMatchdays: matchdays.length,
       matchdays,
     };
+  }
+
+  private async getFootballDataSeasons(competitionCode: string): Promise<CalendarSeasonInfo[]> {
+    try {
+      const token = this.config.get<string>('FOOTBALL_DATA_API_KEY');
+
+      const response = await firstValueFrom(
+        this.http.get(`${this.footballDataBaseUrl}/competitions/${competitionCode}`, {
+          headers: { 'X-Auth-Token': token },
+        }),
+      );
+
+      return (response.data.seasons ?? []).map((s: any) => ({
+        value: String(s.startDate?.substring(0, 4) ?? ''),
+        label: `${s.startDate?.substring(0, 4)}-${s.endDate?.substring(0, 4)}`,
+      })).filter((s: CalendarSeasonInfo) => s.value);
+    } catch (error) {
+      return [];
+    }
+  }
+
+  private getApiFootballSeasons(currentSeason: number): CalendarSeasonInfo[] {
+    return [0, 1, 2].map((offset) => {
+      const year = currentSeason - offset;
+      return {
+        value: String(year),
+        label: `${year}/${year + 1}`,
+      };
+    });
   }
 
   async getCalendar(competitionCode: string, season?: string): Promise<CalendarResponse> {
@@ -271,8 +316,11 @@ export class CalendarService {
     } else {
       const matches = await this.sportsDataProvider.getSeasonMatches(competitionCode, season);
       const { matchdays, currentMatchday } = this.buildMatchdayGroups(matches);
+      const availableSeasons = await this.getFootballDataSeasons(competitionCode);
       response = {
         competitionCode,
+        season: season ?? availableSeasons[0]?.value,
+        availableSeasons,
         currentMatchday,
         totalMatchdays: matchdays.length,
         matchdays,
