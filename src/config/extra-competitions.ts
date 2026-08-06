@@ -53,5 +53,6 @@ export const EXTRA_COMPETITIONS: ExtraCompetition[] = [
 
   // Sélections et coupes
   { leagueId: 9, name: 'Copa America', currentSeason: 2024 },
-  { leagueId: 15, name: 'FIFA Club World Cup', currentSeason: 2025 },
+  { leagueId: 15, name: 'Coupe du Monde des Clubs', currentSeason: 2025 },
+  { leagueId: 1, name: 'Coupe du Monde', currentSeason: 2026 },
 ];
