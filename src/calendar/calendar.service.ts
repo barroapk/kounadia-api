@@ -160,15 +160,17 @@ export class CalendarService {
     };
   }
 
-  private async getApiFootballCalendar(leagueId: number): Promise<CalendarResponse> {
+  private async getApiFootballCalendar(leagueId: number, season?: string): Promise<CalendarResponse> {
     const competition = EXTRA_COMPETITIONS.find((c) => c.leagueId === leagueId);
     if (!competition) {
       throw new Error(`Compétition inconnue (leagueId=${leagueId})`);
     }
 
+    const targetSeason = season ? Number(season) : competition.currentSeason;
+
     const fixtures = await this.apiFootballService.getCalendarByLeagueId(
       leagueId,
-      competition.currentSeason,
+      targetSeason,
     );
 
     if (!fixtures || fixtures.length === 0) {
@@ -253,8 +255,9 @@ export class CalendarService {
     };
   }
 
-  async getCalendar(competitionCode: string): Promise<CalendarResponse> {
-    const cached = this.cache.get(competitionCode);
+  async getCalendar(competitionCode: string, season?: string): Promise<CalendarResponse> {
+    const cacheKey = `${competitionCode}:${season ?? 'current'}`;
+    const cached = this.cache.get(cacheKey);
     const now = Date.now();
 
     if (cached && cached.expiresAt > now) {
@@ -264,9 +267,9 @@ export class CalendarService {
     let response: CalendarResponse;
 
     if (/^\d+$/.test(competitionCode)) {
-      response = await this.getApiFootballCalendar(Number(competitionCode));
+      response = await this.getApiFootballCalendar(Number(competitionCode), season);
     } else {
-      const matches = await this.sportsDataProvider.getSeasonMatches(competitionCode);
+      const matches = await this.sportsDataProvider.getSeasonMatches(competitionCode, season);
       const { matchdays, currentMatchday } = this.buildMatchdayGroups(matches);
       response = {
         competitionCode,
@@ -276,7 +279,7 @@ export class CalendarService {
       };
     }
 
-    this.cache.set(competitionCode, { data: response, expiresAt: now + this.CACHE_DURATION_MS });
+    this.cache.set(cacheKey, { data: response, expiresAt: now + this.CACHE_DURATION_MS });
     return response;
   }
 }

@@ -124,9 +124,10 @@ export class FootballDataProvider implements SportsDataProvider {
     }));
   }
 
-  async getSeasonMatches(competitionCode: string): Promise<Match[]> {
+  async getSeasonMatches(competitionCode: string, season?: string): Promise<Match[]> {
+    const seasonParam = season ? `?season=${season}` : '';
     const response = await firstValueFrom(
-      this.http.get(`${this.baseUrl}/competitions/${competitionCode}/matches`, {
+      this.http.get(`${this.baseUrl}/competitions/${competitionCode}/matches${seasonParam}`, {
         headers: this.headers,
       }),
     );
