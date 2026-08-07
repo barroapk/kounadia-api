@@ -24,6 +24,8 @@ export interface FixtureInfo {
   venue: string | null;
   referee: string | null;
   wonAfter?: 'AET' | 'PEN' | null;
+  penaltyHomeScore?: number | null;
+  penaltyAwayScore?: number | null;
 }
 
 const COMMON_PREFIXES_SUFFIXES = [
@@ -303,6 +305,8 @@ export class ApiFootballService {
             : f.score?.extratime?.home != null && f.score?.extratime?.away != null
               ? 'AET'
               : null,
+        penaltyHomeScore: f.score?.penalty?.home ?? null,
+        penaltyAwayScore: f.score?.penalty?.away ?? null,
       };
 
       this.fixtureInfoCache.set(fixtureId, { data, expiresAt: now + DETAIL_CACHE_MS });

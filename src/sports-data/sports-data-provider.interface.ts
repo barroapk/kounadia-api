@@ -23,6 +23,8 @@ export interface Match {
   // Précise comment un match FINISHED a été décidé, quand ce n'est pas le
   // temps réglementaire seul. Absent = décidé en 90 minutes normales.
   wonAfter?: 'AET' | 'PEN' | null;
+  penaltyHomeScore?: number | null;
+  penaltyAwayScore?: number | null;
 }
 
 export interface StandingRow {

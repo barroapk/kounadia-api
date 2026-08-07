@@ -251,6 +251,8 @@ export class CalendarService {
             : f.score?.extratime?.home != null && f.score?.extratime?.away != null
               ? 'AET'
               : null,
+        penaltyHomeScore: f.score?.penalty?.home ?? null,
+        penaltyAwayScore: f.score?.penalty?.away ?? null,
         minute: status.elapsed ?? null,
         utcDate: f.fixture.date,
         liveMinuteLabel,

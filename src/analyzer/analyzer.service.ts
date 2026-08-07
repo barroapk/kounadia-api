@@ -14,6 +14,9 @@ interface BaseMatchInfo {
   status: string;
   venue: string | null;
   referee: string | null;
+  wonAfter?: 'AET' | 'PEN' | null;
+  penaltyHomeScore?: number | null;
+  penaltyAwayScore?: number | null;
 }
 
 @Injectable()
@@ -53,6 +56,9 @@ export class AnalyzerService {
       status: matchInfo.status,
       venue: matchInfo.venue,
       referee: matchInfo.referee,
+      wonAfter: matchInfo.wonAfter,
+      penaltyHomeScore: matchInfo.penaltyHomeScore,
+      penaltyAwayScore: matchInfo.penaltyAwayScore,
       home,
       away,
       headToHead,
@@ -75,6 +81,9 @@ export class AnalyzerService {
         status: match.status,
         venue: match.venue ?? null,
         referee: match.referee ?? null,
+        wonAfter: match.wonAfter ?? null,
+        penaltyHomeScore: match.penaltyHomeScore ?? null,
+        penaltyAwayScore: match.penaltyAwayScore ?? null,
       };
     } catch (error) {
       this.logger.error(`getFootballDataMatch échec (${matchId}): ${error.message}`);
