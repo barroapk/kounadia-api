@@ -245,6 +245,12 @@ export class CalendarService {
         homeScore: f.goals.home,
         awayScore: f.goals.away,
         status: API_FOOTBALL_STATUS_MAP[status.short] ?? status.short,
+        wonAfter:
+          f.score?.penalty?.home != null && f.score?.penalty?.away != null
+            ? 'PEN'
+            : f.score?.extratime?.home != null && f.score?.extratime?.away != null
+              ? 'AET'
+              : null,
         minute: status.elapsed ?? null,
         utcDate: f.fixture.date,
         liveMinuteLabel,

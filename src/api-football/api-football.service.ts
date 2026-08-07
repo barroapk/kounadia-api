@@ -23,6 +23,7 @@ export interface FixtureInfo {
   status: string;
   venue: string | null;
   referee: string | null;
+  wonAfter?: 'AET' | 'PEN' | null;
 }
 
 const COMMON_PREFIXES_SUFFIXES = [
@@ -296,6 +297,12 @@ export class ApiFootballService {
         status: STATUS_MAP[f.fixture.status.short] ?? f.fixture.status.short,
         venue: f.fixture.venue?.name ?? null,
         referee: f.fixture.referee ?? null,
+        wonAfter:
+          f.score?.penalty?.home != null && f.score?.penalty?.away != null
+            ? 'PEN'
+            : f.score?.extratime?.home != null && f.score?.extratime?.away != null
+              ? 'AET'
+              : null,
       };
 
       this.fixtureInfoCache.set(fixtureId, { data, expiresAt: now + DETAIL_CACHE_MS });
