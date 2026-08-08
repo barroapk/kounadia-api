@@ -42,6 +42,41 @@ export class StandingsService {
     private apiFootballService: ApiFootballService,
   ) {}
 
+  /**
+   * Générique, sans jamais nommer une compétition précise : si de vrais
+   * groupes lettrés (Group A, Group B...) existent, on exclut les blocs
+   * génériques comme "Group Stage" qui les recoupent (ex: classement des
+   * meilleurs 3es) et ne peuvent pas s'afficher clairement comme un groupe
+   * de plus. Sinon (une seule phase, ex: juste "Group Stage" ou pas de
+   * groupe du tout), on garde tout tel quel.
+   */
+  private normalizeApiFootballStandings(items: any[]): StandingRow[] {
+    const groups = items
+      .map((item) => item.group)
+      .filter((group): group is string => typeof group === 'string');
+
+    const hasLetterGroups = groups.some((group) => /^Group [A-Z]$/.test(group));
+
+    const filtered = hasLetterGroups
+      ? items.filter((item) => item.group !== 'Group Stage')
+      : items;
+
+    return filtered.map((item) => ({
+      position: item.rank,
+      group: item.group ?? undefined,
+      teamName: item.team.name,
+      teamCrest: item.team.logo ?? null,
+      playedGames: item.all.played,
+      won: item.all.win,
+      draw: item.all.draw,
+      lost: item.all.lose,
+      goalsFor: item.all.goals.for,
+      goalsAgainst: item.all.goals.against,
+      goalDifference: item.goalsDiff,
+      points: item.points,
+    }));
+  }
+
   private async getApiFootballStandings(leagueId: number, season?: string): Promise<StandingsResponse> {
     const competition = EXTRA_COMPETITIONS.find((c) => c.leagueId === leagueId);
     const resolvedSeason = season ? Number(season) : competition?.currentSeason;
@@ -58,29 +93,7 @@ export class StandingsService {
     }
 
     const result = await this.apiFootballService.getStandingsByLeagueId(leagueId, resolvedSeason);
-
-    // Exclut les blocs génériques non liés à un vrai groupe de classement
-    // (ex: "Group Stage" en plus de "Group A".."Group L" pour la Coupe du monde,
-    // qui recoupe les 3es places qualifiées et ne peut pas s'afficher clairement
-    // comme un groupe de plus dans notre tableau).
-    const filteredStandings = (result?.standings ?? []).filter(
-      (item: any) => item.group !== 'Group Stage' || !(result?.standings ?? []).some((s: any) => s.group?.startsWith('Group ') && s.group !== 'Group Stage'),
-    );
-
-    const standings: StandingRow[] = filteredStandings.map((item: any) => ({
-      position: item.rank,
-      group: item.group ?? undefined,
-      teamName: item.team.name,
-      teamCrest: item.team.logo ?? null,
-      playedGames: item.all.played,
-      won: item.all.win,
-      draw: item.all.draw,
-      lost: item.all.lose,
-      goalsFor: item.all.goals.for,
-      goalsAgainst: item.all.goals.against,
-      goalDifference: item.goalsDiff,
-      points: item.points,
-    }));
+    const standings = this.normalizeApiFootballStandings(result?.standings ?? []);
 
     const response: StandingsResponse = {
       competitionCode: String(leagueId),
