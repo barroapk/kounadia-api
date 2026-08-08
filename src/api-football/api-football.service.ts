@@ -57,6 +57,7 @@ export class ApiFootballService {
   private fixtureInfoCache = new Map<number, { data: FixtureInfo | null; expiresAt: number }>();
   private eventsCache = new Map<number, { data: any[] | null; expiresAt: number }>();
   private calendarCache = new Map<string, { data: any[] | null; expiresAt: number }>();
+  private leagueSeasonsCache = new Map<number, { data: any[]; expiresAt: number }>();
 
   constructor(
     private http: HttpService,
@@ -380,6 +381,28 @@ export class ApiFootballService {
     } catch (error) {
       this.logger.warn(`Classement indisponible pour league ${leagueId}: ${error.message}`);
       return null;
+    }
+  }
+
+  /** Vraies saisons connues d'API-Football pour une compétition (dates + saison courante), cache 7 jours (change rarement). */
+  async getLeagueSeasons(leagueId: number): Promise<any[]> {
+    const cached = this.leagueSeasonsCache.get(leagueId);
+    const now = Date.now();
+    if (cached && cached.expiresAt > now) return cached.data;
+
+    try {
+      const response = await firstValueFrom(
+        this.http.get(`${this.baseUrl}/leagues`, {
+          headers: this.headers,
+          params: { id: leagueId },
+        }),
+      );
+      const seasons = response.data.response?.[0]?.seasons ?? [];
+      this.leagueSeasonsCache.set(leagueId, { data: seasons, expiresAt: now + 7 * 24 * 60 * 60 * 1000 });
+      return seasons;
+    } catch (error) {
+      this.logger.warn(`Saisons indisponibles pour league ${leagueId}: ${error.message}`);
+      return cached?.data ?? [];
     }
   }
 

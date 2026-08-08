@@ -50,6 +50,51 @@ export class StandingsService {
    * de plus. Sinon (une seule phase, ex: juste "Group Stage" ou pas de
    * groupe du tout), on garde tout tel quel.
    */
+  /**
+   * Transforme les vraies saisons retournées par API-Football en format
+   * commun utilise par le frontend.
+   *
+   * Exemples :
+   * - Coupe du monde : 2026
+   * - Premier League : 2025/2026
+   * - CAN : 2025/2026 si les dates couvrent deux annees.
+   */
+  private buildApiFootballSeasons(items: any[], fallbackSeason: number): SeasonInfo[] {
+    const seasons: SeasonInfo[] = items
+      .filter((item) => item?.year != null)
+      .map((item) => {
+        const year = String(item.year);
+        const start = typeof item.start === 'string' ? item.start : '';
+        const end = typeof item.end === 'string' ? item.end : '';
+
+        const startYear = start.slice(0, 4);
+        const endYear = end.slice(0, 4);
+
+        let label = year;
+
+        if (startYear && endYear && startYear !== endYear) {
+          label = `${startYear}/${endYear}`;
+        }
+
+        return {
+          startYear: year,
+          label,
+        };
+      })
+      .sort((a, b) => Number(b.startYear) - Number(a.startYear));
+
+    if (seasons.length > 0) {
+      return seasons;
+    }
+
+    return [
+      {
+        startYear: String(fallbackSeason),
+        label: String(fallbackSeason),
+      },
+    ];
+  }
+
   private normalizeApiFootballStandings(items: any[]): StandingRow[] {
     const groups = items
       .map((item) => item.group)
@@ -58,7 +103,7 @@ export class StandingsService {
     const hasLetterGroups = groups.some((group) => /^Group [A-Z]$/.test(group));
 
     const filtered = hasLetterGroups
-      ? items.filter((item) => item.group !== 'Group Stage')
+      ? items.filter((item) => /^Group [A-Z]$/.test(item.group ?? ''))
       : items;
 
     return filtered.map((item) => ({
@@ -95,12 +140,15 @@ export class StandingsService {
     const result = await this.apiFootballService.getStandingsByLeagueId(leagueId, resolvedSeason);
     const standings = this.normalizeApiFootballStandings(result?.standings ?? []);
 
+    const apiSeasons = await this.apiFootballService.getLeagueSeasons(leagueId);
+    const availableSeasons = this.buildApiFootballSeasons(apiSeasons, resolvedSeason);
+
     const response: StandingsResponse = {
       competitionCode: String(leagueId),
       competitionName: competition?.name ?? `League ${leagueId}`,
       competitionEmblem: result?.emblem ?? null,
       season: String(resolvedSeason),
-      availableSeasons: [],
+      availableSeasons,
       totalTeams: standings.length,
       lastUpdated: new Date().toISOString(),
       standings,
