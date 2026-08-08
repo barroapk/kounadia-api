@@ -59,7 +59,15 @@ export class StandingsService {
 
     const result = await this.apiFootballService.getStandingsByLeagueId(leagueId, resolvedSeason);
 
-    const standings: StandingRow[] = (result?.standings ?? []).map((item: any) => ({
+    // Exclut les blocs génériques non liés à un vrai groupe de classement
+    // (ex: "Group Stage" en plus de "Group A".."Group L" pour la Coupe du monde,
+    // qui recoupe les 3es places qualifiées et ne peut pas s'afficher clairement
+    // comme un groupe de plus dans notre tableau).
+    const filteredStandings = (result?.standings ?? []).filter(
+      (item: any) => item.group !== 'Group Stage' || !(result?.standings ?? []).some((s: any) => s.group?.startsWith('Group ') && s.group !== 'Group Stage'),
+    );
+
+    const standings: StandingRow[] = filteredStandings.map((item: any) => ({
       position: item.rank,
       group: item.group ?? undefined,
       teamName: item.team.name,
