@@ -21,6 +21,11 @@ export interface StandingsResponse {
   totalTeams: number;
   lastUpdated: string;
   standings: StandingRow[];
+  // Présent uniquement quand la saison existe (elle apparaît dans
+  // availableSeasons) mais que ses données détaillées sont refusées par la
+  // source actuelle (ex: 403 sur une ancienne édition non couverte par
+  // l'abonnement). Générique : ne dépend d'aucune compétition précise.
+  unavailableReason?: string;
 }
 
 interface CacheEntry {
@@ -171,7 +176,22 @@ export class StandingsService {
       return cached.data;
     }
 
-    const rows = await this.sportsDataProvider.getStandings(competitionCode, season);
+    let rows: StandingRow[] = [];
+    let unavailableReason: string | undefined;
+
+    try {
+      rows = await this.sportsDataProvider.getStandings(competitionCode, season);
+    } catch (error: any) {
+      // Une saison connue (listée dans availableSeasons) peut être refusée
+      // par la source pour cette ressource précise (ex: 403 sur une édition
+      // historique non couverte par l'abonnement). On ne casse pas la requête :
+      // on renvoie une réponse contrôlée plutôt qu'une erreur 500 opaque.
+      if (error?.response?.status === 403) {
+        unavailableReason = 'Données indisponibles pour cette saison avec la source actuelle.';
+      } else {
+        throw error;
+      }
+    }
 
     let competitionName = competitionCode;
     let competitionEmblem: string | null = null;
@@ -218,6 +238,7 @@ export class StandingsService {
       totalTeams: rows.length,
       lastUpdated: new Date().toISOString(),
       standings: rows,
+      ...(unavailableReason ? { unavailableReason } : {}),
     };
 
     this.cache.set(cacheKey, { data: response, expiresAt: now + this.CACHE_DURATION_MS });

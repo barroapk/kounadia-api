@@ -40,6 +40,8 @@ export class FootballDataProvider implements SportsDataProvider {
       matchday: m.matchday ?? null,
       venue: m.venue ?? null,
       referee: m.referees?.[0]?.name ?? null,
+      group: m.group ?? null,
+      stage: m.stage ?? null,
     };
   }
 
@@ -109,8 +111,16 @@ export class FootballDataProvider implements SportsDataProvider {
     const totalTable = response.data.standings.find((s: any) => s.type === 'TOTAL');
     if (!totalTable) return [];
 
+    // Certaines compétitions (ex: Coupe du monde) n'exposent pas le groupe
+    // sur l'endpoint /standings, seulement TOTAL/HOME/AWAY sans distinction.
+    // Le groupe existe en revanche sur chaque match (m.group). On construit
+    // donc la correspondance équipe -> groupe à partir des matchs, de façon
+    // générique (fonctionne pour toute compétition à groupes, pas seulement WC).
+    const teamToGroup = await this.getTeamGroupMap(competitionCode, season);
+
     return totalTable.table.map((row: any) => ({
       position: row.position,
+      group: teamToGroup.get(row.team.name) ?? undefined,
       teamName: row.team.name,
       teamCrest: row.team.crest ?? null,
       playedGames: row.playedGames,
@@ -122,6 +132,28 @@ export class FootballDataProvider implements SportsDataProvider {
       goalDifference: row.goalDifference,
       points: row.points,
     }));
+  }
+
+  /**
+   * Construit équipe -> groupe à partir des matchs, uniquement si de vrais
+   * groupes existent (sinon retourne une map vide, sans coût inutile).
+   * Générique : ne connaît aucune compétition par son code.
+   */
+  private async getTeamGroupMap(competitionCode: string, season?: string): Promise<Map<string, string>> {
+    try {
+      const matches = await this.getSeasonMatches(competitionCode, season);
+      const map = new Map<string, string>();
+
+      for (const m of matches) {
+        if (!m.group) continue;
+        if (!map.has(m.homeTeam)) map.set(m.homeTeam, m.group);
+        if (!map.has(m.awayTeam)) map.set(m.awayTeam, m.group);
+      }
+
+      return map;
+    } catch {
+      return new Map();
+    }
   }
 
   async getSeasonMatches(competitionCode: string, season?: string): Promise<Match[]> {

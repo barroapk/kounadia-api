@@ -25,6 +25,11 @@ export interface Match {
   wonAfter?: 'AET' | 'PEN' | null;
   penaltyHomeScore?: number | null;
   penaltyAwayScore?: number | null;
+  // Groupe du match (ex: "GROUP_A"), quand la compétition en a. Sert à
+  // enrichir le classement avec les groupes quand la source ne les fournit
+  // pas directement sur l'endpoint standings (cas de football-data.org).
+  group?: string | null;
+  stage?: string | null;
 }
 
 export interface StandingRow {
