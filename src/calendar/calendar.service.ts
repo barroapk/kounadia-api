@@ -10,6 +10,19 @@ import { HIERARCHY_BY_LEAGUE_ID } from '../config/competition-hierarchy';
 
 const LIVE_STATUSES = ['LIVE', 'IN_PLAY', 'PAUSED'];
 
+// Codes de phase standard de football-data.org (utilisés par toutes leurs
+// compétitions à élimination directe, pas seulement une en particulier).
+// Sert uniquement de libellé : le regroupement/tri reste basé sur les dates.
+const STAGE_LABELS: Record<string, string> = {
+  LAST_64: '1/32 de finale',
+  LAST_32: '1/16 de finale',
+  LAST_16: '1/8 de finale',
+  QUARTER_FINALS: 'Quarts de finale',
+  SEMI_FINALS: 'Demi-finales',
+  THIRD_PLACE: 'Match pour la 3e place',
+  FINAL: 'Finale',
+};
+
 const API_FOOTBALL_STATUS_MAP: Record<string, string> = {
   NS: 'TIMED', TBD: 'TIMED',
   '1H': 'IN_PLAY', '2H': 'IN_PLAY', ET: 'IN_PLAY', BT: 'IN_PLAY', P: 'IN_PLAY', LIVE: 'IN_PLAY',
@@ -146,6 +159,31 @@ export class CalendarService {
       if (!byMatchday.has(key)) byMatchday.set(key, { matches: [], roundLabel: m.roundLabel });
       byMatchday.get(key)!.matches.push(m);
     }
+
+    // Matchs sans journée numérotée (phases à élimination directe : football-data.org
+    // renvoie matchday: null pour ces matchs, avec l'info dans "stage" à la place).
+    // Regroupement générique par stage, jamais par nom de compétition.
+    const stageMatches = matches.filter((m: any) => m.matchday == null && m.stage);
+    const stageGroups = new Map<string, Match[]>();
+    for (const m of stageMatches) {
+      const stage = (m as any).stage as string;
+      if (!stageGroups.has(stage)) stageGroups.set(stage, []);
+      stageGroups.get(stage)!.push(m);
+    }
+
+    // Ordre chronologique réel (première date de chaque stage), pas un ordre
+    // deviné par nom : reste valable même pour un format de compétition inconnu.
+    const orderedStages = Array.from(stageGroups.entries()).sort((a, b) => {
+      const earliestA = Math.min(...a[1].map((m) => new Date(m.utcDate).getTime()));
+      const earliestB = Math.min(...b[1].map((m) => new Date(m.utcDate).getTime()));
+      return earliestA - earliestB;
+    });
+
+    const maxMatchday = Math.max(0, ...Array.from(byMatchday.keys()));
+    orderedStages.forEach(([stage, stageMs], index) => {
+      const syntheticKey = maxMatchday + index + 1;
+      byMatchday.set(syntheticKey, { matches: stageMs, roundLabel: STAGE_LABELS[stage] ?? stage });
+    });
 
     const matchdayNumbers = Array.from(byMatchday.keys()).sort((a, b) => a - b);
 
@@ -326,13 +364,14 @@ export class CalendarService {
       response = await this.getApiFootballCalendar(Number(competitionCode), season);
     } else {
       const matches = await this.sportsDataProvider.getSeasonMatches(competitionCode, season);
-      const { matchdays, currentMatchday } = this.buildMatchdayGroups(matches);
+      const { matchdays, currentMatchday, currentRoundLabel } = this.buildMatchdayGroups(matches);
       const availableSeasons = await this.getFootballDataSeasons(competitionCode);
       response = {
         competitionCode,
         season: season ?? availableSeasons[0]?.value,
         availableSeasons,
         currentMatchday,
+        currentRoundLabel,
         totalMatchdays: matchdays.length,
         matchdays,
       };

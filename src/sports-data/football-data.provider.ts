@@ -118,10 +118,40 @@ export class FootballDataProvider implements SportsDataProvider {
     // générique (fonctionne pour toute compétition à groupes, pas seulement WC).
     const teamToGroup = await this.getTeamGroupMap(competitionCode, season);
 
-    return totalTable.table.map((row: any) => ({
-      position: row.position,
+    // Le classement TOTAL de football-data.org est trié par position générale
+    // (points décroissants toutes équipes confondues), pas par groupe. Il faut
+    // regrouper les équipes du même groupe ensemble avant de les renvoyer,
+    // sinon chaque groupe n'affiche qu'une seule équipe côté application.
+    const rowsWithGroup = totalTable.table.map((row: any) => ({
+      row,
       group: teamToGroup.get(row.team.name) ?? undefined,
-      teamName: row.team.name,
+    }));
+
+    const hasGroups = rowsWithGroup.some((r: any) => r.group);
+    if (hasGroups) {
+      rowsWithGroup.sort((a: any, b: any) => {
+        const groupCompare = (a.group ?? '').localeCompare(b.group ?? '');
+        if (groupCompare !== 0) return groupCompare;
+        return a.row.position - b.row.position;
+      });
+    }
+
+    // Recalcule un rang local (1..4) au sein de chaque groupe, dérivé de
+    // l'ordre déjà fourni par football-data.org (donc fiable), plutôt que
+    // d'afficher la position globale du classement TOTAL (ex: "28e") qui
+    // n'a pas de sens une fois les équipes séparées par groupe.
+    const groupCounters = new Map<string, number>();
+    return rowsWithGroup.map(({ row, group }: any) => {
+      let localPosition = row.position;
+      if (group) {
+        const next = (groupCounters.get(group) ?? 0) + 1;
+        groupCounters.set(group, next);
+        localPosition = next;
+      }
+      return {
+        position: localPosition,
+        group,
+        teamName: row.team.name,
       teamCrest: row.team.crest ?? null,
       playedGames: row.playedGames,
       won: row.won,
@@ -129,9 +159,10 @@ export class FootballDataProvider implements SportsDataProvider {
       lost: row.lost,
       goalsFor: row.goalsFor,
       goalsAgainst: row.goalsAgainst,
-      goalDifference: row.goalDifference,
-      points: row.points,
-    }));
+        goalDifference: row.goalDifference,
+        points: row.points,
+      };
+    });
   }
 
   /**
