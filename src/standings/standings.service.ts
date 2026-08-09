@@ -168,31 +168,10 @@ export class StandingsService {
       return this.getApiFootballStandings(Number(competitionCode), season);
     }
 
-    const cacheKey = `${competitionCode}-${season ?? 'current'}`;
-    const cached = this.cache.get(cacheKey);
-    const now = Date.now();
-
-    if (cached && cached.expiresAt > now) {
-      return cached.data;
-    }
-
-    let rows: StandingRow[] = [];
-    let unavailableReason: string | undefined;
-
-    try {
-      rows = await this.sportsDataProvider.getStandings(competitionCode, season);
-    } catch (error: any) {
-      // Une saison connue (listée dans availableSeasons) peut être refusée
-      // par la source pour cette ressource précise (ex: 403 sur une édition
-      // historique non couverte par l'abonnement). On ne casse pas la requête :
-      // on renvoie une réponse contrôlée plutôt qu'une erreur 500 opaque.
-      if (error?.response?.status === 403) {
-        unavailableReason = 'Données indisponibles pour cette saison avec la source actuelle.';
-      } else {
-        throw error;
-      }
-    }
-
+    // On résout la VRAIE saison (via /competitions) AVANT d'interroger le
+    // classement : sinon, sans "season" explicite dans l'URL, le provider
+    // recevait "undefined" et football-data.org renvoyait une réponse
+    // incomplète (quelques équipes seulement), qu'on découvrait trop tard.
     let competitionName = competitionCode;
     let competitionEmblem: string | null = null;
     let resolvedSeason: string | null = season ?? null;
@@ -227,6 +206,37 @@ export class StandingsService {
       }
     } catch {
       // On continue avec des valeurs par défaut plutôt que de tout faire échouer.
+    }
+
+    // Le cache utilise la saison réellement résolue, jamais "current" : sinon
+    // deux requêtes différentes (avec et sans ?season=) pourraient partager
+    // à tort la même entrée de cache alors qu'elles visent la même saison
+    // réelle mais l'auraient découverte à des moments différents.
+    const cacheKey = `${competitionCode}-${resolvedSeason ?? 'current'}`;
+    const cached = this.cache.get(cacheKey);
+    const now = Date.now();
+
+    if (cached && cached.expiresAt > now) {
+      return cached.data;
+    }
+
+    let rows: StandingRow[] = [];
+    let unavailableReason: string | undefined;
+
+    try {
+      // On envoie la saison résolue (l'année seule, ex: "2026"), pas le label
+      // combiné (ex: "2025-2026") : football-data.org attend une année.
+      const seasonParam = resolvedSeason?.split('-')[0];
+      rows = await this.sportsDataProvider.getStandings(competitionCode, seasonParam);
+    } catch (error: any) {
+      const status = error?.response?.status;
+      if (status === 403) {
+        unavailableReason = 'Données indisponibles pour cette saison avec la source actuelle.';
+      } else if (status === 429) {
+        unavailableReason = 'Trop de requêtes vers la source de données, réessayez dans un instant.';
+      } else {
+        throw error;
+      }
     }
 
     const response: StandingsResponse = {
