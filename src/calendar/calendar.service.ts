@@ -241,13 +241,51 @@ export class CalendarService {
 
     const hierarchy = HIERARCHY_BY_LEAGUE_ID[leagueId];
 
-    // Ordre des rounds basé sur leur vraie date de premier match, pas sur une
-    // devinette du texte : un même mot ("1st Round") peut désigner un tour de
-    // qualification (avant la phase principale) dans une compétition, et un
-    // tour à élimination directe (après) dans une autre — impossible à
-    // distinguer de façon fiable par le vocabulaire seul. La date réelle,
-    // elle, ne ment jamais sur l'ordre chronologique des phases.
+    // Tri par CONTENU du texte, pas par date : un match reporté (ex: "Apertura - 9"
+    // joué en mai alors que "Apertura - 10" s'est joué en mars) ferait apparaître
+    // les journées dans le désordre si on triait par date réelle. On sépare donc
+    // toujours : d'abord le préfixe de phase (Apertura/Clausura/Group Stage/rien),
+    // puis à l'intérieur : numéro de journée croissant, puis phases à élimination
+    // directe dans leur ordre logique (jamais deviné par date).
     const uniqueRounds = Array.from(new Set(fixtures.map((f: any) => f.league?.round ?? '')));
+
+    const parseRound = (round: string): { phase: string; matchdayNum: number | null; knockoutOrder: number | null } => {
+      // Il faut tester les rounds à élimination directe D'ABORD : sinon "Round
+      // of 16", "Round of 32" ou "Qualification Round 1" sont à tort lus comme
+      // des journées numérotées (leur texte se termine aussi par un chiffre).
+      for (const { pattern, order } of CalendarService.KNOCKOUT_ORDER) {
+        if (pattern.test(round)) {
+          // Le préfixe n'est extrait QUE si la partie après le tiret est
+          // elle-même, à l'identique, un round à élimination directe connu
+          // (teste chaque partie séparément) : sinon "Quarter-finals" est à
+          // tort découpé en préfixe "Quarter" + mot-clé "finals".
+          let phase = '';
+          const dashIndex = round.lastIndexOf(' - ');
+          if (dashIndex > 0) {
+            const afterDash = round.slice(dashIndex + 3).trim();
+            const afterDashIsKnockout = CalendarService.KNOCKOUT_ORDER.some(
+              (k) => k.pattern.test(afterDash) && new RegExp(`^(${k.pattern.source})$`, 'i').test(afterDash),
+            );
+            if (afterDashIsKnockout) {
+              phase = round.slice(0, dashIndex).trim();
+            }
+          }
+          return { phase, matchdayNum: null, knockoutOrder: order };
+        }
+      }
+
+      const numberMatch = round.match(/^(.*?)[\s-]*(\d+)\s*$/);
+      if (numberMatch) {
+        return { phase: numberMatch[1].trim(), matchdayNum: parseInt(numberMatch[2], 10), knockoutOrder: null };
+      }
+
+      return { phase: round, matchdayNum: null, knockoutOrder: null };
+    };
+
+    // Date du premier match de chaque round, uniquement utilisée pour
+    // départager des PHASES différentes (ex: "" vs "Group Stage") quand leur
+    // ordre logique n'est pas évident autrement. Jamais utilisée pour trier
+    // les journées à l'intérieur d'une même phase (un report la fausserait).
     const roundEarliestDate = new Map<string, number>();
     for (const f of fixtures) {
       const round: string = f.league?.round ?? '';
@@ -257,8 +295,63 @@ export class CalendarService {
       }
     }
 
+    // Date du plus ancien round de chaque phase, pour ordonner les phases
+    // entre elles (ex: Qualification avant Group Stage) de façon fiable.
+    const phaseEarliestDate = new Map<string, number>();
+    for (const round of uniqueRounds) {
+      const { phase } = parseRound(round);
+      const ts = roundEarliestDate.get(round)!;
+      if (!phaseEarliestDate.has(phase) || ts < phaseEarliestDate.get(phase)!) {
+        phaseEarliestDate.set(phase, ts);
+      }
+    }
+
+    // Niveau global du tournoi, fixe et indépendant de la date ou du préfixe :
+    // 0 = qualifications, 1 = phase de groupes/journées, 2+ = élimination directe
+    // (dans l'ordre de KNOCKOUT_ORDER). Sert à départager des rounds qui n'ont
+    // ni le même préfixe ni la même nature (ex: "Qualification Round 1" vs
+    // "Group Stage - 1" vs "Round of 32", tous avec phase="" pour ces deux
+    // derniers mais des étapes de tournoi complètement différentes).
+    const globalTier = (r: { matchdayNum: number | null; knockoutOrder: number | null }, round: string): number => {
+      if (/qualif|preliminary/i.test(round)) return 0;
+      if (r.matchdayNum !== null) return 1;
+      if (r.knockoutOrder !== null) return 2 + r.knockoutOrder;
+      return 1;
+    };
+
     const orderedRounds = uniqueRounds.sort((a, b) => {
-      return roundEarliestDate.get(a)! - roundEarliestDate.get(b)!;
+      const pa = parseRound(a);
+      const pb = parseRound(b);
+
+      const tierA = globalTier(pa, a);
+      const tierB = globalTier(pb, b);
+
+      // CAS 1 : deux phases explicites différentes (ex: "Apertura" vs
+      // "Clausura", "Eastern Conference" vs "Western Conference"). On garde
+      // chaque phase comme un BLOC entier : jamais de comparaison individuelle
+      // entre leurs journées.
+      if (pa.phase !== '' && pb.phase !== '' && pa.phase !== pb.phase) {
+        return phaseEarliestDate.get(pa.phase)! - phaseEarliestDate.get(pb.phase)!;
+      }
+
+      // CAS 2 : même phase explicite (ex: Apertura - 8 / Apertura - 9 /
+      // Apertura - Final).
+      if (pa.phase === pb.phase && pa.phase !== '') {
+        if (tierA !== tierB) return tierA - tierB;
+        if (pa.matchdayNum !== null && pb.matchdayNum !== null) return pa.matchdayNum - pb.matchdayNum;
+        return (pa.knockoutOrder ?? 999) - (pb.knockoutOrder ?? 999);
+      }
+
+      // CAS 3 : rounds sans phase explicite (ex: Qualification Round 1 →
+      // Group Stage → Round of 32 → Round of 16). Le niveau global tranche.
+      if (tierA !== tierB) return tierA - tierB;
+      if (pa.matchdayNum !== null && pb.matchdayNum !== null) return pa.matchdayNum - pb.matchdayNum;
+
+      if (pa.phase !== pb.phase) {
+        return phaseEarliestDate.get(pa.phase)! - phaseEarliestDate.get(pb.phase)!;
+      }
+
+      return (pa.knockoutOrder ?? 999) - (pb.knockoutOrder ?? 999);
     });
     const roundToNumber = new Map<string, number>();
     orderedRounds.forEach((round, index) => roundToNumber.set(round, index + 1));
