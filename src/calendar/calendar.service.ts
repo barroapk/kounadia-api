@@ -216,8 +216,29 @@ export class CalendarService {
       };
     });
 
+    // Une journée reportée peut contenir un match très éloigné dans le temps
+    // (ex: J7 avec un match en septembre alors que J19 se joue en août).
+    // Il ne faut donc pas choisir la première journée non terminée selon son
+    // numéro, mais celle dont le prochain match est chronologiquement le plus proche.
     const liveGroup = matchdays.find((g) => g.summary.live > 0);
-    const upcomingGroup = matchdays.find((g) => !g.allFinished && g.summary.scheduled > 0);
+
+    const now = Date.now();
+    const notPlayedStatuses = ['FINISHED', ...LIVE_STATUSES, 'POSTPONED', 'SUSPENDED', 'CANCELLED'];
+
+    const upcomingGroups = matchdays
+      .map((group) => {
+        const nextMatch = group.matches
+          .filter((m) => !notPlayedStatuses.includes(m.status))
+          .map((m) => ({ timestamp: new Date(m.utcDate).getTime() }))
+          .filter((item) => Number.isFinite(item.timestamp) && item.timestamp >= now)
+          .sort((a, b) => a.timestamp - b.timestamp)[0];
+
+        return nextMatch ? { group, nextMatchTimestamp: nextMatch.timestamp } : null;
+      })
+      .filter((item): item is { group: MatchdayGroup; nextMatchTimestamp: number } => item !== null)
+      .sort((a, b) => a.nextMatchTimestamp - b.nextMatchTimestamp);
+
+    const upcomingGroup = upcomingGroups[0]?.group;
     const currentGroup = liveGroup ?? upcomingGroup ?? matchdays[matchdays.length - 1];
 
     return {
