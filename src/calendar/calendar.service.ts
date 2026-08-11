@@ -41,6 +41,10 @@ export interface MatchdaySummary {
 export interface MatchdayGroup {
   matchday: number;
   roundLabel?: string; // Texte original (ex: "Round of 16"), pour les compétitions sans vraie journée numérotée.
+  // true = round à élimination directe (afficher roundLabel tel quel, ex: "1/8 de finale").
+  // false/absent = vraie journée numérotée (afficher "J{n}" côté Flutter, quel que soit
+  // le texte brut de la source : "Regular Season - 5", "Apertura - 5", "Group Stage - 5"...).
+  isKnockout?: boolean;
   matches: Match[];
   allFinished: boolean;
   summary: MatchdaySummary;
@@ -151,12 +155,12 @@ export class CalendarService {
     currentMatchday: number;
     currentRoundLabel?: string;
   } {
-    const byMatchday = new Map<number, { matches: Match[]; roundLabel?: string }>();
+    const byMatchday = new Map<number, { matches: Match[]; roundLabel?: string; isKnockout?: boolean }>();
 
     for (const m of matches) {
       const key = m.matchday;
       if (key == null) continue;
-      if (!byMatchday.has(key)) byMatchday.set(key, { matches: [], roundLabel: m.roundLabel });
+      if (!byMatchday.has(key)) byMatchday.set(key, { matches: [], roundLabel: m.roundLabel, isKnockout: (m as any).isKnockout ?? false });
       byMatchday.get(key)!.matches.push(m);
     }
 
@@ -182,7 +186,7 @@ export class CalendarService {
     const maxMatchday = Math.max(0, ...Array.from(byMatchday.keys()));
     orderedStages.forEach(([stage, stageMs], index) => {
       const syntheticKey = maxMatchday + index + 1;
-      byMatchday.set(syntheticKey, { matches: stageMs, roundLabel: STAGE_LABELS[stage] ?? stage });
+      byMatchday.set(syntheticKey, { matches: stageMs, roundLabel: STAGE_LABELS[stage] ?? stage, isKnockout: true });
     });
 
     const matchdayNumbers = Array.from(byMatchday.keys()).sort((a, b) => a - b);
@@ -205,6 +209,7 @@ export class CalendarService {
       return {
         matchday: day,
         roundLabel: entry.roundLabel,
+        isKnockout: entry.isKnockout,
         matches: dayMatches,
         allFinished: effectiveFinished === dayMatches.length,
         summary: { totalMatches: dayMatches.length, finished, live, scheduled },
@@ -359,6 +364,7 @@ export class CalendarService {
     const matches = fixtures.map((f: any) => {
       const round: string = f.league?.round ?? '';
       const matchdayNum = roundToNumber.get(round)!;
+      const parsedRound = parseRound(round);
 
       const status = f.fixture.status;
       let liveMinuteLabel: string | null = null;
@@ -368,7 +374,7 @@ export class CalendarService {
         liveMinuteLabel = status.extra ? `${base}+${status.extra}'` : `${base}'`;
       }
 
-      const match: Match & { roundLabel?: string } = {
+      const match: Match & { roundLabel?: string; isKnockout?: boolean } = {
         id: f.fixture.id,
         competition: competition.name,
         homeTeam: f.teams.home.name,
@@ -396,6 +402,7 @@ export class CalendarService {
         country: hierarchy?.country ?? 'Autre',
         matchday: matchdayNum,
         roundLabel: round || undefined,
+        isKnockout: parsedRound.knockoutOrder !== null,
       };
       return match;
     });
