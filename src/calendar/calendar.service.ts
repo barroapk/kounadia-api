@@ -511,7 +511,12 @@ export class CalendarService {
       };
     }
 
-    this.cache.set(cacheKey, { data: response, expiresAt: now + this.CACHE_DURATION_MS });
+    // Ne jamais mettre en cache une réponse vide (0 matchdays) : ça peut être
+    // une erreur temporaire ou un rate-limit de la source, pas un vrai manque
+    // de données. Sinon un échec ponctuel reste "collé" en cache pendant 6h.
+    if (response.totalMatchdays > 0) {
+      this.cache.set(cacheKey, { data: response, expiresAt: now + this.CACHE_DURATION_MS });
+    }
     return response;
   }
 }
