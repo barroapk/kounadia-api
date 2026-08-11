@@ -241,7 +241,14 @@ export class CalendarService {
     );
 
     if (!fixtures || fixtures.length === 0) {
-      return { competitionCode: String(leagueId), currentMatchday: 1, totalMatchdays: 0, matchdays: [] };
+      return {
+        competitionCode: String(leagueId),
+        season: String(targetSeason),
+        availableSeasons: await this.getApiFootballCalendarSeasons(leagueId, targetSeason),
+        currentMatchday: 1,
+        totalMatchdays: 0,
+        matchdays: [],
+      };
     }
 
     const hierarchy = HIERARCHY_BY_LEAGUE_ID[leagueId];
@@ -412,7 +419,7 @@ export class CalendarService {
     return {
       competitionCode: String(leagueId),
       season: String(targetSeason),
-      availableSeasons: this.getApiFootballSeasons(competition.currentSeason),
+      availableSeasons: await this.getApiFootballCalendarSeasons(leagueId, targetSeason),
       currentMatchday,
       currentRoundLabel,
       totalMatchdays: matchdays.length,
@@ -439,14 +446,41 @@ export class CalendarService {
     }
   }
 
-  private getApiFootballSeasons(currentSeason: number): CalendarSeasonInfo[] {
-    return [0, 1, 2].map((offset) => {
-      const year = currentSeason - offset;
-      return {
-        value: String(year),
-        label: `${year}/${year + 1}`,
-      };
+  /**
+   * Transforme les vraies saisons retournées par API-Football en format
+   * commun. Ne devine plus artificiellement "annee/annee+1" : certaines
+   * compétitions (Coupe du monde, Argentine...) ont un format différent
+   * selon leurs vraies dates de saison.
+   */
+  private async getApiFootballCalendarSeasons(leagueId: number, fallbackSeason: number): Promise<CalendarSeasonInfo[]> {
+    const items = await this.apiFootballService.getLeagueSeasons(leagueId);
+
+    const seasonItems = items
+      .filter((item: any) => item?.year != null)
+      .sort((a: any, b: any) => Number(b.year) - Number(a.year));
+
+    // Le format de la saison courante peut être trompeur lorsque API-Football
+    // n'a encore enregistré que les qualifications (dates toutes dans la même
+    // année civile). On se base donc sur la saison PRÉCÉDENTE (N-1), dont les
+    // dates sont toujours complètes, pour déterminer si cette compétition
+    // traverse deux années civiles ou non.
+    const isSplitYear = (item: any): boolean => {
+      const start = typeof item?.start === 'string' ? item.start : '';
+      const end = typeof item?.end === 'string' ? item.end : '';
+      const startYear = Number(start.slice(0, 4));
+      const endYear = Number(end.slice(0, 4));
+      return Number.isFinite(startYear) && Number.isFinite(endYear) && endYear > startYear;
+    };
+
+    const seasons: CalendarSeasonInfo[] = seasonItems.map((item: any) => {
+      const year = Number(item.year);
+      const previous = seasonItems.find((s: any) => Number(s.year) === year - 1);
+      const splitFormat = previous ? isSplitYear(previous) : isSplitYear(item);
+      return { value: String(year), label: splitFormat ? `${year}/${year + 1}` : String(year) };
     });
+
+    if (seasons.length > 0) return seasons;
+    return [{ value: String(fallbackSeason), label: String(fallbackSeason) }];
   }
 
   async getCalendar(competitionCode: string, season?: string): Promise<CalendarResponse> {

@@ -6,7 +6,7 @@ export interface ExtraCompetition {
 
 export const EXTRA_COMPETITIONS: ExtraCompetition[] = [
   // Europe
-  { leagueId: 3, name: 'Europa League', currentSeason: 2025 },
+  { leagueId: 3, name: 'Europa League', currentSeason: 2026 },
   { leagueId: 848, name: 'Conference League', currentSeason: 2025 },
   { leagueId: 45, name: 'FA Cup', currentSeason: 2025 },
   { leagueId: 143, name: 'Copa del Rey', currentSeason: 2025 },

@@ -65,26 +65,30 @@ export class StandingsService {
    * - CAN : 2025/2026 si les dates couvrent deux annees.
    */
   private buildApiFootballSeasons(items: any[], fallbackSeason: number): SeasonInfo[] {
-    const seasons: SeasonInfo[] = items
+    const seasonItems = items
       .filter((item) => item?.year != null)
-      .map((item) => {
-        const year = String(item.year);
-        const start = typeof item.start === 'string' ? item.start : '';
-        const end = typeof item.end === 'string' ? item.end : '';
+      .sort((a, b) => Number(b.year) - Number(a.year));
 
-        const startYear = start.slice(0, 4);
-        const endYear = end.slice(0, 4);
+    // Même logique que CalendarService.getApiFootballCalendarSeasons() :
+    // se base sur la saison PRÉCÉDENTE (dates toujours complètes) plutôt que
+    // sur la saison courante (parfois incomplète, seulement les qualifications).
+    const isSplitYear = (item: any): boolean => {
+      const start = typeof item?.start === 'string' ? item.start : '';
+      const end = typeof item?.end === 'string' ? item.end : '';
+      const startYear = Number(start.slice(0, 4));
+      const endYear = Number(end.slice(0, 4));
+      return Number.isFinite(startYear) && Number.isFinite(endYear) && endYear > startYear;
+    };
 
-        let label = year;
+    const seasons: SeasonInfo[] = seasonItems.map((item) => {
+      const year = Number(item.year);
+      const previous = seasonItems.find((s) => Number(s.year) === year - 1);
+      const splitFormat = previous ? isSplitYear(previous) : isSplitYear(item);
 
-        if (startYear && endYear && startYear !== endYear) {
-          label = `${startYear}/${endYear}`;
-        }
-
-        return {
-          startYear: year,
-          label,
-        };
+      return {
+        startYear: String(year),
+        label: splitFormat ? `${year}/${year + 1}` : String(year),
+      };
       })
       .sort((a, b) => Number(b.startYear) - Number(a.startYear));
 
