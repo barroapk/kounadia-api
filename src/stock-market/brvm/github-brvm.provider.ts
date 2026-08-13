@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { BrvmCandle, BrvmCatalog, BrvmDataProvider, BrvmQuote } from './brvm.types';
+import { BRVM_COMPANY_NAMES } from './brvm-companies-catalog';
 
 @Injectable()
 export class GitHubBrvmProvider implements BrvmDataProvider {
@@ -22,8 +23,19 @@ export class GitHubBrvmProvider implements BrvmDataProvider {
 
     const companies = data.tickers_list
       .filter((ticker: unknown): ticker is string => typeof ticker === 'string')
-      .map((ticker: string) => ({ ticker: ticker.trim() }))
-      .filter((company) => company.ticker.length > 0);
+      .map((ticker: string) => ticker.trim())
+      .filter((ticker: string) => ticker.length > 0)
+      .map((ticker: string) => {
+        const known = BRVM_COMPANY_NAMES[ticker];
+        return {
+          ticker,
+          // Si le ticker n'est pas encore dans notre catalogue de noms
+          // (nouvelle admission par exemple), on renvoie null plutôt que
+          // d'inventer un nom : Flutter doit alors se rabattre sur le ticker seul.
+          name: known?.name ?? null,
+          country: known?.country ?? null,
+        };
+      });
 
     const indexes = data.indexes_list
       .filter((index: unknown): index is string => typeof index === 'string')

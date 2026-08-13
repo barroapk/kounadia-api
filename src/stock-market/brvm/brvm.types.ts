@@ -1,5 +1,7 @@
 export interface BrvmCompany {
   ticker: string;
+  name: string | null;
+  country: string | null;
 }
 
 export interface BrvmCatalog {
