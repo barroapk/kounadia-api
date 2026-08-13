@@ -8,6 +8,24 @@ export interface BrvmCatalog {
   lastUpdated: string | null;
 }
 
+export interface BrvmCandle {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface BrvmQuote extends BrvmCandle {
+  ticker: string;
+  previousClose: number | null;
+  change: number | null;
+  changePercent: number | null;
+}
+
 export interface BrvmDataProvider {
   getCatalog(): Promise<BrvmCatalog>;
+  getHistory(ticker: string): Promise<BrvmCandle[]>;
+  getQuote(ticker: string): Promise<BrvmQuote | null>;
 }
