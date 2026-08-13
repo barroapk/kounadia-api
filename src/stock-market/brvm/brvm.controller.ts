@@ -10,6 +10,11 @@ export class BrvmController {
     return this.brvmService.getCatalog();
   }
 
+  @Get('quotes')
+  async getAllQuotes() {
+    return { quotes: await this.brvmService.getAllQuotes() };
+  }
+
   @Get(':ticker')
   async getQuote(@Param('ticker') ticker: string) {
     const quote = await this.brvmService.getQuote(ticker);
