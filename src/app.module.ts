@@ -13,6 +13,7 @@ import { EloModule } from './elo/elo.module';
 import { ExtraCompetitionsModule } from './extra-competitions/extra-competitions.module';
 import { StandingsModule } from './standings/standings.module';
 import { CalendarModule } from './calendar/calendar.module';
+import { BrvmModule } from './stock-market/brvm/brvm.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { CalendarModule } from './calendar/calendar.module';
     ExtraCompetitionsModule,
     StandingsModule,
     CalendarModule,
+    BrvmModule,
   ],
   controllers: [AppController],
   providers: [AppService],

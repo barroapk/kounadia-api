@@ -1,0 +1,1 @@
+export const BRVM_DATA_PROVIDER = 'BRVM_DATA_PROVIDER';
