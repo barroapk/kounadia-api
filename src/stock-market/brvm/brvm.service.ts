@@ -90,4 +90,28 @@ export class BrvmService {
     this.cachedQuotes = { data: quotes, expiresAt: now + this.CACHE_DURATION_MS };
     return quotes;
   }
+
+  /**
+   * Cotations des indices BRVM (ex: BRVMC = Composite, BRVM30). Réutilise
+   * directement getQuote() : un indice est traité exactement comme une
+   * action, sauf que son volume est toujours 0 (pas un volume de
+   * transactions, ne pas l'interpréter comme tel côté Flutter).
+   */
+  // Limité aux deux indices principaux pour le dashboard : les autres
+  // indices du catalogue (BRVMSP, BRVMTR...) ont une dernière donnée figée
+  // au 31/12/2025 dans la source actuelle, donc trompeurs affichés comme
+  // "cotation actuelle". Réservés à une future section "indices sectoriels"
+  // où leur date sera explicitement affichée.
+  private readonly FEATURED_INDEXES = ['BRVMC', 'BRVM30'];
+
+  async getIndexQuotes(): Promise<BrvmQuote[]> {
+    const results = await Promise.allSettled(
+      this.FEATURED_INDEXES.map((ticker) => this.getQuote(ticker)),
+    );
+
+    return results
+      .filter((r): r is PromiseFulfilledResult<BrvmQuote | null> => r.status === 'fulfilled')
+      .map((r) => r.value)
+      .filter((q): q is BrvmQuote => q !== null);
+  }
 }

@@ -15,6 +15,11 @@ export class BrvmController {
     return { quotes: await this.brvmService.getAllQuotes() };
   }
 
+  @Get('indices')
+  async getIndices() {
+    return { indices: await this.brvmService.getIndexQuotes() };
+  }
+
   @Get(':ticker')
   async getQuote(@Param('ticker') ticker: string) {
     const quote = await this.brvmService.getQuote(ticker);
