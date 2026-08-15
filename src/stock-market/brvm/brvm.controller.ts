@@ -53,6 +53,7 @@ export class BrvmController {
       ticker: ticker.toUpperCase(),
       sma20: this.indicatorsService.computeSma(history, 20),
       sma50: this.indicatorsService.computeSma(history, 50),
+      rsi14: this.indicatorsService.computeRsi(history, 14),
     };
   }
 }
