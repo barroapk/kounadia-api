@@ -130,4 +130,136 @@ export class BrvmIndicatorsService {
 
     return maxDrawdown * 100;
   }
+
+  private clamp(value: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  /**
+   * Sous-score Tendance (0-100), pondere 25% dans le KOUNADIA SCORE.
+   * Mesure l'ecart relatif entre SMA20 et SMA50, mappe lineairement
+   * [-10%, +10%] -> [0, 100]. 50 = SMA20 == SMA50 (aucune tendance nette).
+   */
+  private scoreTrend(sma20: number, sma50: number): number {
+    if (sma50 === 0) return 50;
+    const ecart = ((sma20 - sma50) / sma50) * 100;
+    return ((this.clamp(ecart, -10, 10) + 10) / 20) * 100;
+  }
+
+  /**
+   * Sous-score Pression (0-100), pondere 20%. Mesure l'INTENSITE du RSI,
+   * symetrique autour de 50 (un RSI a 30 et un RSI a 70 donnent le meme
+   * score) : ce sous-score ne mesure jamais une direction, seulement la
+   * force du mouvement recent. La direction reelle (hausse/baisse) est
+   * toujours calculee et affichee separement.
+   */
+  private scorePressure(rsi: number): number {
+    return this.clamp(Math.abs(rsi - 50) * 2, 0, 100);
+  }
+
+  /**
+   * Sous-score Momentum (0-100), pondere 20%. Variation du cours sur les
+   * 20 dernieres seances, mappee lineairement [-20%, +20%] -> [0, 100].
+   */
+  private scoreMomentum(momentumPercent: number): number {
+    return ((this.clamp(momentumPercent, -20, 20) + 20) / 40) * 100;
+  }
+
+  /**
+   * Sous-score Stabilite (0-100), pondere 20%. Inverse de la volatilite
+   * annualisee : une volatilite faible donne un score eleve. NE SIGNIFIE
+   * PAS "meilleure action" - decrit uniquement l'amplitude des variations
+   * recentes, pas la qualite du titre.
+   */
+  private scoreStability(volatilityPercent: number): number {
+    return 100 - (this.clamp(volatilityPercent, 0, 80) / 80) * 100;
+  }
+
+  /**
+   * Fiabilite des donnees (0-100), SEPAREE du KOUNADIA SCORE. Mesure
+   * uniquement la confiance qu'on peut avoir dans le calcul (ancienneté de
+   * l'historique disponible), pas la performance de l'action. 500 seances
+   * (~2 ans de bourse) = fiabilite maximale.
+   */
+  private scoreDataReliability(nbSeances: number): number {
+    return this.clamp((nbSeances / 500) * 100, 0, 100);
+  }
+
+  /**
+   * KOUNADIA SCORE : synthese deterministe de la configuration technique
+   * actuelle d'une action, sur 100 points. Formule documentee et fixe :
+   *   Tendance (25%) + Pression (20%) + Momentum (20%) + Stabilite (20%)
+   *   + Fiabilite des donnees (15%)
+   *
+   * IMPORTANT : ce score ne mesure JAMAIS une probabilite de hausse ou de
+   * baisse. C'est une description de la configuration technique observee,
+   * pas une prediction. La direction (haussiere/baissiere/neutre) est
+   * toujours calculee et exposee separement, jamais fusionnee dans ce score.
+   */
+  computeKounadiaScore(
+    candles: BrvmCandle[],
+    sma20: SmaPoint[],
+    sma50: SmaPoint[],
+    rsi14: SmaPoint[],
+    volatility20: number | null,
+  ): {
+    score: number;
+    dataReliability: number;
+    components: {
+      trend: number;
+      pressure: number;
+      momentum: number;
+      stability: number;
+    };
+    direction: 'haussiere' | 'baissiere' | 'neutre';
+    momentum20Percent: number | null;
+  } | null {
+    if (sma20.length === 0 || sma50.length === 0 || rsi14.length === 0 || volatility20 === null) {
+      return null;
+    }
+
+    const lastSma20 = sma20[sma20.length - 1].value;
+    const lastSma50 = sma50[sma50.length - 1].value;
+    const lastRsi = rsi14[rsi14.length - 1].value;
+
+    // Momentum 20 seances : variation du cours entre il y a 20 seances et aujourd'hui.
+    let momentum20Percent: number | null = null;
+    if (candles.length >= 21) {
+      const past = candles[candles.length - 21].close;
+      const current = candles[candles.length - 1].close;
+      if (past !== 0) momentum20Percent = ((current - past) / past) * 100;
+    }
+
+    const trend = this.scoreTrend(lastSma20, lastSma50);
+    const pressure = this.scorePressure(lastRsi);
+    const momentum = momentum20Percent !== null ? this.scoreMomentum(momentum20Percent) : 50;
+    const stability = this.scoreStability(volatility20);
+    const dataReliability = this.scoreDataReliability(candles.length);
+
+    const score = trend * 0.25 + pressure * 0.20 + momentum * 0.20 + stability * 0.20;
+    // Normalise sur 100 puisque ces 4 composantes pesent 85% avant fiabilite
+    // (fiabilite exclue volontairement du score, cf. doc ci-dessus).
+    const normalizedScore = (score / 85) * 100;
+
+    // Direction : basee sur la tendance ET le momentum reel, jamais sur le
+    // score lui-meme. Seuils volontairement larges pour eviter de qualifier
+    // "haussiere"/"baissiere" un mouvement negligeable.
+    let direction: 'haussiere' | 'baissiere' | 'neutre' = 'neutre';
+    const sma20vs50 = lastSma50 !== 0 ? ((lastSma20 - lastSma50) / lastSma50) * 100 : 0;
+    if (sma20vs50 > 0.5 && (momentum20Percent ?? 0) > 0) direction = 'haussiere';
+    else if (sma20vs50 < -0.5 && (momentum20Percent ?? 0) < 0) direction = 'baissiere';
+
+    return {
+      score: Math.round(normalizedScore * 10) / 10,
+      dataReliability: Math.round(dataReliability * 10) / 10,
+      components: {
+        trend: Math.round(trend * 10) / 10,
+        pressure: Math.round(pressure * 10) / 10,
+        momentum: Math.round(momentum * 10) / 10,
+        stability: Math.round(stability * 10) / 10,
+      },
+      direction,
+      momentum20Percent: momentum20Percent !== null ? Math.round(momentum20Percent * 100) / 100 : null,
+    };
+  }
 }

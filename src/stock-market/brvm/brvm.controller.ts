@@ -49,14 +49,21 @@ export class BrvmController {
       throw new NotFoundException({ message: 'Action BRVM introuvable', ticker: ticker.toUpperCase() });
     }
 
+    const sma20 = this.indicatorsService.computeSma(history, 20);
+    const sma50 = this.indicatorsService.computeSma(history, 50);
+    const rsi14 = this.indicatorsService.computeRsi(history, 14);
+    const volatility20 = this.indicatorsService.computeVolatility(history, 20);
+    const maxDrawdown = this.indicatorsService.computeMaxDrawdown(history);
+
     return {
       ticker: ticker.toUpperCase(),
       lastDataDate: history[history.length - 1].date,
-      sma20: this.indicatorsService.computeSma(history, 20),
-      sma50: this.indicatorsService.computeSma(history, 50),
-      rsi14: this.indicatorsService.computeRsi(history, 14),
-      volatility20: this.indicatorsService.computeVolatility(history, 20),
-      maxDrawdown: this.indicatorsService.computeMaxDrawdown(history),
+      sma20,
+      sma50,
+      rsi14,
+      volatility20,
+      maxDrawdown,
+      kounadiaScore: this.indicatorsService.computeKounadiaScore(history, sma20, sma50, rsi14, volatility20),
     };
   }
 }
