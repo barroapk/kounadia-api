@@ -51,9 +51,12 @@ export class BrvmController {
 
     return {
       ticker: ticker.toUpperCase(),
+      lastDataDate: history[history.length - 1].date,
       sma20: this.indicatorsService.computeSma(history, 20),
       sma50: this.indicatorsService.computeSma(history, 50),
       rsi14: this.indicatorsService.computeRsi(history, 14),
+      volatility20: this.indicatorsService.computeVolatility(history, 20),
+      maxDrawdown: this.indicatorsService.computeMaxDrawdown(history),
     };
   }
 }

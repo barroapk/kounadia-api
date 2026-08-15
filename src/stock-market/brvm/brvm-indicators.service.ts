@@ -81,4 +81,53 @@ export class BrvmIndicatorsService {
 
     return result;
   }
+
+  /**
+   * Volatilite historique annualisee, calculee sur les `period` dernieres
+   * seances (defaut 20 = environ 1 mois de bourse). Ecart-type des
+   * rendements quotidiens, annualise par racine(252) (nombre approximatif
+   * de seances de bourse par an), exprime en pourcentage.
+   * Retourne null si pas assez de donnees.
+   */
+  computeVolatility(candles: BrvmCandle[], period = 20): number | null {
+    if (candles.length < period + 1) return null;
+
+    const recent = candles.slice(-(period + 1));
+    const returns: number[] = [];
+    for (let i = 1; i < recent.length; i++) {
+      if (recent[i - 1].close === 0) continue;
+      returns.push((recent[i].close - recent[i - 1].close) / recent[i - 1].close);
+    }
+
+    if (returns.length === 0) return null;
+
+    const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+    const variance = returns.reduce((a, b) => a + (b - mean) ** 2, 0) / returns.length;
+    const stdDev = Math.sqrt(variance);
+
+    return stdDev * Math.sqrt(252) * 100;
+  }
+
+  /**
+   * Drawdown maximal : la plus grosse baisse (en %) entre un sommet et le
+   * creux qui a suivi, sur l'historique fourni. Toujours <= 0 (ou null si
+   * pas de donnees). C'est une mesure du risque reellement vecu par un
+   * investisseur, pas une prediction.
+   */
+  computeMaxDrawdown(candles: BrvmCandle[]): number | null {
+    if (candles.length === 0) return null;
+
+    let peak = candles[0].close;
+    let maxDrawdown = 0;
+
+    for (const candle of candles) {
+      if (candle.close > peak) peak = candle.close;
+      if (peak > 0) {
+        const drawdown = (candle.close - peak) / peak;
+        if (drawdown < maxDrawdown) maxDrawdown = drawdown;
+      }
+    }
+
+    return maxDrawdown * 100;
+  }
 }
