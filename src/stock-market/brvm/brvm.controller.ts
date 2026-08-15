@@ -1,9 +1,13 @@
 import { Controller, Get, NotFoundException, Param } from '@nestjs/common';
 import { BrvmService } from './brvm.service';
+import { BrvmIndicatorsService } from './brvm-indicators.service';
 
 @Controller('stocks/brvm')
 export class BrvmController {
-  constructor(private readonly brvmService: BrvmService) {}
+  constructor(
+    private readonly brvmService: BrvmService,
+    private readonly indicatorsService: BrvmIndicatorsService,
+  ) {}
 
   @Get()
   async getCatalog() {
@@ -36,5 +40,19 @@ export class BrvmController {
       throw new NotFoundException({ message: 'Action BRVM introuvable', ticker: ticker.toUpperCase() });
     }
     return { ticker: ticker.toUpperCase(), candles: history };
+  }
+
+  @Get(':ticker/indicators')
+  async getIndicators(@Param('ticker') ticker: string) {
+    const history = await this.brvmService.getHistory(ticker);
+    if (history.length === 0) {
+      throw new NotFoundException({ message: 'Action BRVM introuvable', ticker: ticker.toUpperCase() });
+    }
+
+    return {
+      ticker: ticker.toUpperCase(),
+      sma20: this.indicatorsService.computeSma(history, 20),
+      sma50: this.indicatorsService.computeSma(history, 50),
+    };
   }
 }
