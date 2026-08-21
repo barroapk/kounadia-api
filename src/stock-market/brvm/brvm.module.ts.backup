@@ -6,7 +6,6 @@ import { BRVM_DATA_PROVIDER } from './brvm-data.constants';
 import { BrvmController } from './brvm.controller';
 import { BrvmIndicatorsService } from './brvm-indicators.service';
 import { BrvmTradingService } from './brvm-trading.service';
-import { BrvmLiveScheduler } from './brvm-live.scheduler';
 import { BrvmLiveService } from './brvm-live.service';
 
 @Module({
@@ -16,14 +15,12 @@ import { BrvmLiveService } from './brvm-live.service';
     BrvmService,
     BrvmIndicatorsService,
     BrvmTradingService,
-    BrvmLiveScheduler,
     BrvmLiveService,
     {
       provide: BRVM_DATA_PROVIDER,
       useClass: GitHubBrvmProvider,
     },
   ],
-  exports: [BrvmService, BrvmIndicatorsService, BrvmTradingService,
-    BrvmLiveScheduler, BrvmLiveService],
+  exports: [BrvmService, BrvmIndicatorsService, BrvmTradingService, BrvmLiveService],
 })
 export class BrvmModule {}

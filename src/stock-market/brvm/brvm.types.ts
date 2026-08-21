@@ -31,3 +31,12 @@ export interface BrvmDataProvider {
   getHistory(ticker: string): Promise<BrvmCandle[]>;
   getQuote(ticker: string): Promise<BrvmQuote | null>;
 }
+
+
+export interface BrvmLiveQuote {
+  ticker: string;
+  price: number;
+  changePercent: number | null;
+  source: 'brvm_official';
+  fetchedAt: string;
+}

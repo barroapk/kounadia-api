@@ -1,12 +1,16 @@
-import { Controller, Get, NotFoundException, Param } from '@nestjs/common';
+import { Controller, Get, NotFoundException, Param, Query } from '@nestjs/common';
 import { BrvmService } from './brvm.service';
 import { BrvmIndicatorsService } from './brvm-indicators.service';
+import { BrvmTradingService } from './brvm-trading.service';
+import { BrvmLiveService } from './brvm-live.service';
 
 @Controller('stocks/brvm')
 export class BrvmController {
   constructor(
     private readonly brvmService: BrvmService,
     private readonly indicatorsService: BrvmIndicatorsService,
+    private readonly tradingService: BrvmTradingService,
+    private readonly liveService: BrvmLiveService,
   ) {}
 
   @Get()
@@ -22,6 +26,29 @@ export class BrvmController {
   @Get('indices')
   async getIndices() {
     return { indices: await this.brvmService.getIndexQuotes() };
+  }
+
+  @Get('live')
+  async getLiveQuotes() {
+    const quotes = await this.liveService.getLiveQuotes();
+    return {
+      count: quotes.length,
+      source: 'brvm_official',
+      fetchedAt: new Date().toISOString(),
+      quotes,
+    };
+  }
+
+  @Get('trading/top')
+  async getTopTrading(@Query('limit') limit?: string) {
+    const max = limit ? Math.max(1, Math.min(48, Number(limit) || 10)) : 10;
+    const { results, lowLiquidity } = await this.tradingService.computeTop(max);
+    return {
+      count: results.length,
+      results,
+      lowLiquidityCount: lowLiquidity.length,
+      lowLiquidity,
+    };
   }
 
   @Get(':ticker')
@@ -65,5 +92,23 @@ export class BrvmController {
       maxDrawdown,
       kounadiaScore: this.indicatorsService.computeKounadiaScore(history, sma20, sma50, rsi14, volatility20),
     };
+  }
+
+  @Get(':ticker/trading')
+  async getTradingScore(@Param('ticker') ticker: string) {
+    const history = await this.brvmService.getHistory(ticker);
+    if (history.length === 0) {
+      throw new NotFoundException({ message: 'Action BRVM introuvable', ticker: ticker.toUpperCase() });
+    }
+
+    const result = await this.tradingService.computeForTicker(ticker, history);
+    if (!result) {
+      throw new NotFoundException({
+        message: 'Historique insuffisant pour calculer le score Trading (minimum 51 seances)',
+        ticker: ticker.toUpperCase(),
+      });
+    }
+
+    return result;
   }
 }
