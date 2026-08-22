@@ -27,6 +27,60 @@ export class BrvmLiveService {
   ) {}
 
   /**
+   * Restaure les dernières cotations depuis Supabase.
+   *
+   * Utile après un redémarrage de Render : le cache mémoire
+   * est vide, mais les dernières données restent disponibles
+   * dans Supabase.
+   */
+  private async loadFromSupabase(): Promise<BrvmLiveQuote[] | null> {
+    const { data, error } = await this.supabase.client
+      .from('brvm_live_quotes')
+      .select('ticker, price, change_percent, source, fetched_at')
+      .order('ticker');
+
+    if (error) {
+      this.logger.warn(
+        `Lecture Supabase BRVM impossible : ${error.message}`,
+      );
+      return null;
+    }
+
+    if (!data || data.length === 0) {
+      return null;
+    }
+
+    const quotes: BrvmLiveQuote[] = data.map((row) => ({
+      ticker: row.ticker,
+      price: Number(row.price),
+      changePercent:
+        row.change_percent === null
+          ? null
+          : Number(row.change_percent),
+      source: 'brvm_official',
+      fetchedAt: row.fetched_at,
+    }));
+
+    const latestFetchedAt = quotes.reduce(
+      (latest, quote) =>
+        quote.fetchedAt > latest ? quote.fetchedAt : latest,
+      quotes[0].fetchedAt,
+    );
+
+    this.cache = {
+      quotes,
+      fetchedAt: latestFetchedAt,
+      expiresAt: Date.now() + this.CACHE_TTL_MS,
+    };
+
+    this.logger.log(
+      `Cache BRVM restauré depuis Supabase : ${quotes.length} cotations`,
+    );
+
+    return quotes;
+  }
+
+  /**
    * Récupération publique.
    *
    * Les utilisateurs de KOUNADIA lisent le cache.
@@ -44,6 +98,14 @@ export class BrvmLiveService {
     // attend le même appel au lieu de créer plusieurs appels BRVM.
     if (this.refreshPromise) {
       return this.refreshPromise;
+    }
+
+    // Après un redémarrage du serveur, restaurer d'abord
+    // les dernières données persistées dans Supabase.
+    const restored = await this.loadFromSupabase();
+
+    if (restored && restored.length > 0) {
+      return restored;
     }
 
     this.refreshPromise = this.refreshCache();
@@ -136,6 +198,30 @@ export class BrvmLiveService {
       if (quotes.length === 0) {
         throw new Error(
           'Aucune cotation BRVM extraite depuis la page officielle',
+        );
+      }
+
+      // Persistance Supabase : les dernières cotations restent disponibles
+      // même après un redémarrage du serveur Render.
+      const rows = quotes.map((quote) => ({
+        ticker: quote.ticker,
+        price: quote.price,
+        change_percent: quote.changePercent,
+        source: quote.source,
+        fetched_at: quote.fetchedAt,
+      }));
+
+      const { error: supabaseError } = await this.supabase.client
+        .from('brvm_live_quotes')
+        .upsert(rows, { onConflict: 'ticker' });
+
+      if (supabaseError) {
+        this.logger.warn(
+          `Sauvegarde Supabase BRVM échouée : ${supabaseError.message}`,
+        );
+      } else {
+        this.logger.log(
+          `Supabase BRVM synchronisée : ${rows.length} cotations`,
         );
       }
 
