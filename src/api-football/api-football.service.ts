@@ -428,10 +428,19 @@ export class ApiFootballService {
           params: { league: leagueId, season },
         }),
       );
+      const planError = response.data?.errors?.plan;
+      if (planError) {
+        this.logger.error(`API-Football - acces refuse par le plan (calendrier league ${leagueId}): ${planError}`);
+        throw new Error(`PLAN_RESTRICTED: ${planError}`);
+      }
+
       const fixtures = response.data.response ?? [];
       this.calendarCache.set(cacheKey, { data: fixtures, expiresAt: now + 6 * 60 * 60 * 1000 });
       return fixtures;
     } catch (error) {
+      if (error.message?.startsWith('PLAN_RESTRICTED:')) {
+        throw error;
+      }
       this.logger.warn(`Calendrier indisponible pour league ${leagueId}: ${error.message}`);
       return cached?.data ?? null;
     }

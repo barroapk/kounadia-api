@@ -63,6 +63,7 @@ export interface CalendarResponse {
   currentRoundLabel?: string;
   totalMatchdays: number;
   matchdays: MatchdayGroup[];
+  unavailableReason?: string;
 }
 
 interface CacheEntry {
@@ -256,10 +257,20 @@ export class CalendarService {
 
     const targetSeason = season ? Number(season) : competition.currentSeason;
 
-    const fixtures = await this.apiFootballService.getCalendarByLeagueId(
-      leagueId,
-      targetSeason,
-    );
+    let fixtures: any[] | null = null;
+    let unavailableReason: string | undefined;
+
+    try {
+      fixtures = await this.apiFootballService.getCalendarByLeagueId(leagueId, targetSeason);
+    } catch (error: any) {
+      if (error.message?.startsWith('PLAN_RESTRICTED:')) {
+        // Abonnement API-Football insuffisant pour cette saison : on le
+        // signale distinctement d'un calendrier simplement vide.
+        unavailableReason = "Cette compétition n'est temporairement pas disponible (accès fournisseur limité).";
+      } else {
+        throw error;
+      }
+    }
 
     if (!fixtures || fixtures.length === 0) {
       return {
@@ -269,6 +280,7 @@ export class CalendarService {
         currentMatchday: 1,
         totalMatchdays: 0,
         matchdays: [],
+        ...(unavailableReason ? { unavailableReason } : {}),
       };
     }
 
