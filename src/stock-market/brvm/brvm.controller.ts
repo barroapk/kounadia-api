@@ -3,6 +3,7 @@ import { BrvmService } from './brvm.service';
 import { BrvmIndicatorsService } from './brvm-indicators.service';
 import { BrvmTradingService } from './brvm-trading.service';
 import { BrvmLiveService } from './brvm-live.service';
+import { BrvmSevenService } from './brvm-seven.service';
 
 @Controller('stocks/brvm')
 export class BrvmController {
@@ -11,6 +12,7 @@ export class BrvmController {
     private readonly indicatorsService: BrvmIndicatorsService,
     private readonly tradingService: BrvmTradingService,
     private readonly liveService: BrvmLiveService,
+    private readonly sevenService: BrvmSevenService,
   ) {}
 
   @Get()
@@ -49,6 +51,52 @@ export class BrvmController {
       lowLiquidityCount: lowLiquidity.length,
       lowLiquidity,
     };
+  }
+
+
+  /**
+   * Analyse complète KOUNADIA 7/7.
+   *
+   * Cette route expose les 7 critères techniques sans présenter
+   * le score comme une probabilité de hausse ou de baisse.
+   */
+  @Get(':ticker/analysis/7')
+  async getSevenAnalysis(@Param('ticker') ticker: string) {
+    const normalizedTicker = ticker.trim().toUpperCase();
+    const history = await this.brvmService.getHistory(normalizedTicker);
+
+    if (history.length === 0) {
+      throw new NotFoundException({
+        message: 'Action BRVM introuvable',
+        ticker: normalizedTicker,
+      });
+    }
+
+    return this.sevenService.analyze(
+      normalizedTicker,
+      history,
+    );
+  }
+
+  /**
+   * Classement complet KOUNADIA 7/7.
+   *
+   * Retourne les meilleures configurations techniques
+   * observées sur le marché BRVM.
+   */
+  @Get('analysis/7/top')
+  async getSevenTop(@Query('limit') limit?: string) {
+    const max = limit
+      ? Math.max(1, Math.min(48, Number(limit) || 10))
+      : 10;
+
+    const catalog = await this.brvmService.getCatalog();
+
+    return this.sevenService.analyzeTop(
+      catalog.companies,
+      (ticker) => this.brvmService.getHistory(ticker),
+      max,
+    );
   }
 
   @Get(':ticker')

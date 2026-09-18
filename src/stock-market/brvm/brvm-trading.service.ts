@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { BrvmCandle } from './brvm.types';
 import { BrvmIndicatorsService } from './brvm-indicators.service';
+import { BrvmEntryService, EntryAnalysis } from './brvm-entry.service';
+import { BrvmSevenService } from './brvm-seven.service';
 import { BrvmService } from './brvm.service';
 
 export type TradingReading = 'faible' | 'neutre' | 'a_surveiller' | 'interessante' | 'forte' | 'exceptionnelle';
@@ -48,6 +50,7 @@ export interface TradingScoreResult {
   strengths: string[];
   warnings: string[];
   raw: TradingRawValues;
+  entryAnalysis?: EntryAnalysis;
 }
 
 interface RawTradingMetrics {
@@ -79,6 +82,8 @@ export class BrvmTradingService {
   constructor(
     private readonly indicators: BrvmIndicatorsService,
     private readonly brvmService: BrvmService,
+    private readonly entryService: BrvmEntryService,
+    private readonly sevenService: BrvmSevenService,
   ) {}
 
   private clamp(value: number, min: number, max: number): number {
@@ -368,7 +373,31 @@ export class BrvmTradingService {
     const raw = cachedRaw ?? this.computeRaw(normalizedTicker, candles);
     if (!raw) return null;
 
-    return this.finalize(raw, snapshot.liquidityDistribution, snapshot.volatilityDistribution);
+    const result = this.finalize(raw, snapshot.liquidityDistribution, snapshot.volatilityDistribution);
+
+    if (candles && candles.length >= 20) {
+      const lastClose = candles[candles.length - 1].close;
+      const sma20 = this.indicators.computeSma(candles, 20);
+      const rsi14 = this.indicators.computeRsi(candles, 14);
+      const lastSma20 = sma20.length > 0 ? sma20[sma20.length - 1].value : null;
+      const lastRsi = rsi14.length > 0 ? rsi14[rsi14.length - 1].value : null;
+
+      const sevenResult = this.sevenService.analyze(normalizedTicker, candles);
+
+      result.entryAnalysis = this.entryService.analyzeEntry(
+        {
+          ticker: normalizedTicker,
+          score77: sevenResult.confluence?.score ?? 50,
+          direction: sevenResult.confluence?.direction ?? 'neutre',
+          lastClose,
+          lastSma20,
+          lastRsi,
+        },
+        candles,
+      );
+    }
+
+    return result;
   }
 
   async computeTop(limit: number): Promise<{ results: TradingScoreResult[]; lowLiquidity: TradingScoreResult[] }> {
@@ -381,6 +410,37 @@ export class BrvmTradingService {
       .filter((r) => r.riskGate.passed)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
+
+    await Promise.all(
+      results.map(async (res) => {
+        try {
+          const candles = await this.brvmService.getHistory(res.ticker);
+          if (candles && candles.length >= 20) {
+            const lastClose = candles[candles.length - 1].close;
+            const sma20 = this.indicators.computeSma(candles, 20);
+            const rsi14 = this.indicators.computeRsi(candles, 14);
+            const lastSma20 = sma20.length > 0 ? sma20[sma20.length - 1].value : null;
+            const lastRsi = rsi14.length > 0 ? rsi14[rsi14.length - 1].value : null;
+
+            const sevenResult = this.sevenService.analyze(res.ticker, candles);
+
+            res.entryAnalysis = this.entryService.analyzeEntry(
+              {
+                ticker: res.ticker,
+                score77: sevenResult.confluence?.score ?? 50,
+                direction: sevenResult.confluence?.direction ?? 'neutre',
+                lastClose,
+                lastSma20,
+                lastRsi,
+              },
+              candles,
+            );
+          }
+        } catch {
+          // Si l'historique échoue, on conserve le result standard
+        }
+      }),
+    );
 
     const lowLiquidity = all
       .filter((r) => !r.riskGate.passed && r.raw.liquidityPercentile < 20)

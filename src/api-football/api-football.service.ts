@@ -369,6 +369,12 @@ export class ApiFootballService {
           params: { league: leagueId, season },
         }),
       );
+      const planError = response.data?.errors?.plan;
+      if (planError) {
+        this.logger.error(`API-Football - acces refuse par le plan: ${planError}`);
+        throw new Error(`PLAN_RESTRICTED: ${planError}`);
+      }
+
       const league = response.data.response?.[0]?.league;
 
       // API-Football renvoie un tableau par groupe (Group A, Group B...)
@@ -379,6 +385,9 @@ export class ApiFootballService {
 
       return { standings, emblem: league?.logo ?? null };
     } catch (error) {
+      if (error.message?.startsWith('PLAN_RESTRICTED:')) {
+        throw error;
+      }
       this.logger.warn(`Classement indisponible pour league ${leagueId}: ${error.message}`);
       return null;
     }

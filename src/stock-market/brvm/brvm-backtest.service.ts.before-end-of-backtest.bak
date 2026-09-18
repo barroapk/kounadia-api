@@ -1,0 +1,1363 @@
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BrvmService } from './brvm.service';
+import { BrvmTradingService } from './brvm-trading.service';
+import { BrvmCandle } from './brvm.types';
+
+export interface BacktestOptions {
+  from?: string;
+  to?: string;
+  initialCapital?: number;
+  feeRate?: number;
+  slippageRate?: number;
+  positionSizeRate?: number;
+  maxHoldingSessions?: number;
+  pullbackWindowSessions?: number;
+}
+
+export interface ForwardMetrics {
+  return10d: number | null;
+  return20d: number | null;
+  return60d: number | null;
+  mfe10d: number | null;
+  mfe20d: number | null;
+  mfe60d: number | null;
+  mae10d: number | null;
+  mae20d: number | null;
+  mae60d: number | null;
+}
+
+export interface HistoricalSignal {
+  date: string;
+  ticker: string;
+  price: number;
+  score: number;
+  timingScore: number;
+  action: string;
+  executed: boolean;
+  executionDate?: string;
+  executionPrice?: number;
+  exitDate?: string;
+  exitPrice?: number;
+  exitReason?:
+    | 'STOP_LOSS'
+    | 'TAKE_PROFIT'
+    | 'MAX_HOLDING'
+    | 'EXPIRED_PULLBACK'
+    | 'BREAKOUT_NOT_CONFIRMED';
+  netReturn?: number;
+  future: ForwardMetrics;
+}
+
+export interface BacktestPerformance {
+  winRate10d: number;
+  winRate20d: number;
+  winRate60d: number;
+  averageMfe10d: number;
+  averageMfe20d: number;
+  averageMfe60d: number;
+  averageMae10d: number;
+  averageMae20d: number;
+  averageMae60d: number;
+  profitFactor: number;
+  maxDrawdown: number;
+  sharpeRatio: number;
+  averageReturn10d: number;
+  averageReturn20d: number;
+  averageReturn60d: number;
+  executedTradesCount: number;
+  executedWinRate: number;
+  totalNetReturn: number;
+}
+
+export interface BacktestResult {
+  ticker: string;
+  period: {
+    from: string;
+    to: string;
+  };
+  initialCapital: number;
+  finalCapital: number;
+  totalSignals: number;
+  signalsCount: {
+    buyNow: number;
+    buyBreakout: number;
+    waitForPullback: number;
+    hold: number;
+    avoid: number;
+  };
+  performance: BacktestPerformance;
+  costs: {
+    totalFees: number;
+    totalSlippage: number;
+    totalCosts: number;
+  };
+  signals: HistoricalSignal[];
+}
+
+interface ActivePosition {
+  entryIndex: number;
+  entryPrice: number;
+  stopLoss: number | null;
+  takeProfit: number | null;
+  capitalAllocated: number;
+  signalIndex: number;
+
+  signalDate: string;
+  score: number;
+  timingScore: number;
+  action: HistoricalSignal['action'];
+  future: ForwardMetrics;
+}
+
+interface PendingPosition {
+  signalIndex: number;
+  signalDate: string;
+  score: number;
+  timingScore: number;
+  action: HistoricalSignal['action'];
+  future: ForwardMetrics;
+
+  executionIndex: number;
+  executionPrice: number;
+
+  stopLoss: number | null;
+  takeProfit: number | null;
+}
+
+function requireActivePosition(
+  position: ActivePosition | null,
+): ActivePosition {
+  if (position === null) {
+    throw new Error('Aucune position active.');
+  }
+  return position;
+}
+
+@Injectable()
+export class BrvmBacktestService {
+  private readonly logger = new Logger(BrvmBacktestService.name);
+
+  constructor(
+    private readonly brvmService: BrvmService,
+    private readonly tradingService: BrvmTradingService,
+  ) {}
+
+  async backtestTicker(
+    ticker: string,
+    options: BacktestOptions = {},
+  ): Promise<BacktestResult> {
+    const symbol = ticker.toUpperCase();
+    const candles = await this.brvmService.getHistory(symbol);
+
+    if (!candles || candles.length < 80) {
+      throw new NotFoundException(
+        `Historique insuffisant pour le backtest de ${symbol}. Minimum recommandé : 80 séances.`,
+      );
+    }
+
+    const feeRate = this.sanitizeRate(options.feeRate ?? 0.006);
+    const slippageRate = this.sanitizeRate(options.slippageRate ?? 0.002);
+    const initialCapital = Math.max(
+      0,
+      options.initialCapital ?? 1_000_000,
+    );
+    const positionSizeRate = this.clamp(
+      options.positionSizeRate ?? 0.10,
+      0.01,
+      1,
+    );
+    const maxHoldingSessions = Math.max(
+      1,
+      Math.floor(options.maxHoldingSessions ?? 20),
+    );
+    const pullbackWindowSessions = Math.max(
+      1,
+      Math.floor(options.pullbackWindowSessions ?? 10),
+    );
+
+    const fromDate = options.from
+      ? new Date(options.from)
+      : new Date(candles[50].date);
+
+    const toDate = options.to
+      ? new Date(options.to)
+      : new Date(candles[candles.length - 1].date);
+
+    if (
+      Number.isNaN(fromDate.getTime()) ||
+      Number.isNaN(toDate.getTime())
+    ) {
+      throw new Error('Date de backtest invalide.');
+    }
+
+    const signalsCount = {
+      buyNow: 0,
+      buyBreakout: 0,
+      waitForPullback: 0,
+      hold: 0,
+      avoid: 0,
+    };
+
+    const signals: HistoricalSignal[] = [];
+
+    let capital = initialCapital;
+    let totalFees = 0;
+    let totalSlippage = 0;
+
+    let activePosition: ActivePosition | null = null;
+    let pendingPosition: PendingPosition | null = null;
+
+    for (let i = 50; i < candles.length; i++) {
+      const current = candles[i];
+      const currentDate = new Date(current.date);
+
+      if (currentDate < fromDate || currentDate > toDate) {
+        continue;
+      }
+
+      /*
+       * ============================================================
+       * 1A. GESTION DE L'ORDRE EN ATTENTE
+       * ============================================================
+       */
+
+      if (pendingPosition !== null) {
+        const pending = pendingPosition;
+
+        if (i < pending.executionIndex) {
+          continue;
+        }
+
+        if (i === pending.executionIndex) {
+          const capitalAllocated = capital * positionSizeRate;
+
+          if (capitalAllocated <= 0) {
+            pendingPosition = null;
+            continue;
+          }
+
+          const entrySlippage =
+            capitalAllocated * slippageRate;
+
+          const effectiveEntryCapital =
+            capitalAllocated + entrySlippage;
+
+          const entryFee =
+            effectiveEntryCapital * feeRate;
+
+          const totalEntryCapital =
+            effectiveEntryCapital + entryFee;
+
+          if (totalEntryCapital > capital) {
+            pendingPosition = null;
+            continue;
+          }
+
+          capital -= totalEntryCapital;
+
+          totalFees += entryFee;
+          totalSlippage += entrySlippage;
+
+          activePosition = {
+            entryIndex: i,
+            entryPrice: pending.executionPrice,
+            stopLoss: pending.stopLoss,
+            takeProfit: pending.takeProfit,
+            capitalAllocated,
+            signalIndex: pending.signalIndex,
+            signalDate: pending.signalDate,
+            score: pending.score,
+            timingScore: pending.timingScore,
+            action: pending.action,
+            future: pending.future,
+          };
+
+          /*
+           * Le signal devient réellement exécuté
+           * au moment où le PendingPosition devient
+           * une ActivePosition.
+           */
+          const signal = signals[pending.signalIndex];
+
+          if (signal) {
+            signal.executed = true;
+            signal.executionDate = current.date;
+            signal.executionPrice = pending.executionPrice;
+          }
+
+          pendingPosition = null;
+
+          continue;
+        }
+
+        pendingPosition = null;
+      }
+
+      /*
+       * ============================================================
+       * 1. GESTION DE LA POSITION ACTIVE
+       * ============================================================
+       */
+
+      if (activePosition !== null) {
+        const positionState = requireActivePosition(activePosition);
+
+        const sessionsHeld = i - positionState.entryIndex;
+
+        let exitPrice: number | null = null;
+        let exitReason:
+          | 'STOP_LOSS'
+          | 'TAKE_PROFIT'
+          | 'MAX_HOLDING'
+          | null = null;
+
+        /*
+         * Hypothèse conservatrice :
+         * si SL et TP sont touchés dans la même bougie,
+         * le STOP est considéré comme exécuté en premier.
+         */
+        if (
+          positionState.stopLoss !== null &&
+          current.low <= positionState.stopLoss
+        ) {
+          exitPrice = positionState.stopLoss;
+          exitReason = 'STOP_LOSS';
+        } else if (
+          positionState.takeProfit !== null &&
+          current.high >= positionState.takeProfit
+        ) {
+          exitPrice = positionState.takeProfit;
+          exitReason = 'TAKE_PROFIT';
+        } else if (sessionsHeld >= maxHoldingSessions) {
+          exitPrice = current.close;
+          exitReason = 'MAX_HOLDING';
+        }
+
+        if (exitPrice !== null && exitReason !== null) {
+          const grossExitValue =
+            positionState.capitalAllocated *
+            (exitPrice / positionState.entryPrice);
+
+          const exitSlippage =
+            grossExitValue * slippageRate;
+
+          const effectiveExitValue =
+            grossExitValue - exitSlippage;
+
+          const exitFee =
+            effectiveExitValue * feeRate;
+
+          const netCapitalReturned =
+            effectiveExitValue - exitFee;
+
+          const tradeNetReturn =
+            (netCapitalReturned -
+              positionState.capitalAllocated) /
+            positionState.capitalAllocated;
+
+          capital += netCapitalReturned;
+
+          totalFees += exitFee;
+          totalSlippage += exitSlippage;
+
+          /*
+           * Le trade est maintenant réellement clôturé.
+           * On reporte les informations de sortie sur
+           * le signal historique correspondant.
+           */
+          const signal = signals[positionState.signalIndex];
+
+          if (signal) {
+            signal.exitDate = current.date;
+            signal.exitPrice = exitPrice;
+            signal.exitReason = exitReason;
+            signal.netReturn = tradeNetReturn;
+          }
+
+          activePosition = null;
+
+          /*
+           * La position est maintenant clôturée.
+           * On ne génère PAS un nouveau signal sur cette même
+           * bougie : le prochain signal pourra apparaître
+           * à la séance suivante.
+           */
+          continue;
+        }
+
+        /*
+         * Position toujours active :
+         * Single Position Lock.
+         */
+        continue;
+      }
+
+      /*
+       * ============================================================
+       * 2. CALCUL DU SIGNAL À T
+       * ============================================================
+       */
+
+      const historicalWindow = candles.slice(0, i + 1);
+
+      let tradingResult;
+
+      try {
+        tradingResult =
+          await this.tradingService.computeForTicker(
+            symbol,
+            historicalWindow,
+          );
+      } catch (error) {
+        this.logger.warn(
+          `Erreur signal ${symbol} ${current.date}: ${
+            error instanceof Error
+              ? error.message
+              : String(error)
+          }`,
+        );
+        continue;
+      }
+
+      if (!tradingResult?.entryAnalysis) {
+        continue;
+      }
+
+      const entry = tradingResult.entryAnalysis;
+      const action = entry.status;
+
+      this.incrementSignalCount(action, signalsCount);
+
+      const future =
+        this.computeForwardMetrics(candles, i);
+
+      const isOpportunity =
+        action === 'BUY_NOW' ||
+        action === 'BUY_BREAKOUT' ||
+        action === 'WAIT_FOR_PULLBACK';
+
+      if (!isOpportunity) {
+        signals.push({
+          date: current.date,
+          ticker: symbol,
+          price: current.close,
+          score: tradingResult.score,
+          timingScore: entry.timingScore,
+          action,
+          executed: false,
+          future,
+        });
+
+        continue;
+      }
+
+      /*
+       * ============================================================
+       * 3. EXECUTION DIFFÉRÉE
+       * ============================================================
+       */
+
+      let executionIndex = -1;
+      let executionPrice: number | null = null;
+      let failedReason:
+        | 'EXPIRED_PULLBACK'
+        | 'BREAKOUT_NOT_CONFIRMED'
+        | undefined;
+
+      /*
+       * ------------------------------------------------------------
+       * BUY_NOW
+       * ------------------------------------------------------------
+       * Signal détecté à T.
+       * Achat à T+1.
+       */
+      if (action === 'BUY_NOW') {
+        const next = candles[i + 1];
+
+        if (next) {
+          executionIndex = i + 1;
+          executionPrice =
+            next.open > 0 ? next.open : next.close;
+        }
+      }
+
+      /*
+       * ------------------------------------------------------------
+       * WAIT_FOR_PULLBACK
+       * ------------------------------------------------------------
+       */
+      if (action === 'WAIT_FOR_PULLBACK') {
+        const zone = entry.idealEntryZone;
+
+        if (zone) {
+          const end =
+            Math.min(
+              i + pullbackWindowSessions,
+              candles.length - 1,
+            );
+
+          for (let k = i + 1; k <= end; k++) {
+            const candle = candles[k];
+
+            if (candle.low <= zone.max) {
+              executionIndex = k;
+
+              /*
+               * Si l'ouverture est déjà dans la zone,
+               * on prend l'ouverture.
+               * Sinon on considère une exécution au maximum
+               * de la zone comme approximation prudente.
+               */
+              if (
+                candle.open >= zone.min &&
+                candle.open <= zone.max
+              ) {
+                executionPrice = candle.open;
+              } else {
+                executionPrice = zone.max;
+              }
+
+              break;
+            }
+          }
+        }
+
+        if (executionIndex === -1) {
+          failedReason = 'EXPIRED_PULLBACK';
+        }
+      }
+
+      /*
+       * ------------------------------------------------------------
+       * BUY_BREAKOUT
+       * ------------------------------------------------------------
+       */
+      if (action === 'BUY_BREAKOUT') {
+        const breakoutLevel =
+          entry.breakout?.breakoutLevel ??
+          entry.resistance;
+
+        const next = candles[i + 1];
+
+        if (
+          breakoutLevel !== null &&
+          breakoutLevel !== undefined &&
+          next
+        ) {
+          /*
+           * Le prix doit réellement clôturer au-dessus
+           * du niveau de breakout.
+           */
+          if (next.close > breakoutLevel) {
+            executionIndex = i + 1;
+
+            /*
+             * Exécution au close pour éviter de prétendre
+             * connaître le mouvement intraday avant la clôture.
+             */
+            executionPrice = next.close;
+          } else {
+            failedReason =
+              'BREAKOUT_NOT_CONFIRMED';
+          }
+        } else {
+          failedReason =
+            'BREAKOUT_NOT_CONFIRMED';
+        }
+      }
+
+      /*
+       * ============================================================
+       * 4. SIGNAL NON EXÉCUTÉ
+       * ============================================================
+       */
+
+      if (
+        executionIndex === -1 ||
+        executionPrice === null
+      ) {
+        signals.push({
+          date: current.date,
+          ticker: symbol,
+          price: current.close,
+          score: tradingResult.score,
+          timingScore: entry.timingScore,
+          action,
+          executed: false,
+          exitReason: failedReason,
+          future,
+        });
+
+        continue;
+      }
+
+      /*
+       * ============================================================
+       * 5. CRÉATION DE L'ORDRE EN ATTENTE
+       * ============================================================
+       *
+       * Le signal est détecté à T.
+       *
+       * L'ordre n'est PAS exécuté immédiatement.
+       * Il est enregistré dans pendingPosition.
+       *
+       * L'exécution réelle sera gérée au début d'une séance
+       * ultérieure par le bloc 1A.
+       */
+
+      const signalIndex = signals.length;
+
+      signals.push({
+        date: current.date,
+        ticker: symbol,
+        price: current.close,
+        score: tradingResult.score,
+        timingScore: entry.timingScore,
+        action,
+        executed: false,
+        future,
+      });
+
+      pendingPosition = {
+        signalIndex,
+        signalDate: current.date,
+        score: tradingResult.score,
+        timingScore: entry.timingScore,
+        action,
+        future,
+        executionIndex,
+        executionPrice,
+        stopLoss: entry.support,
+        takeProfit: entry.resistance,
+      };
+
+      /*
+       * IMPORTANT :
+       * On ne traite pas la sortie ici.
+       *
+       * La position sera créée uniquement lorsque
+       * pendingPosition sera exécutée dans le bloc 1A.
+       */
+      continue;
+    }
+
+    /*
+     * ============================================================
+     * 8. PERFORMANCE
+     * ============================================================
+     */
+
+    const performance =
+      this.calculatePerformanceMetrics(
+        signals,
+        positionSizeRate,
+      );
+
+    return {
+      ticker: symbol,
+      period: {
+        from: this.formatDate(fromDate),
+        to: this.formatDate(toDate),
+      },
+      initialCapital,
+      finalCapital: Math.round(capital),
+      totalSignals: signals.length,
+      signalsCount,
+      performance,
+      costs: {
+        totalFees: Math.round(totalFees),
+        totalSlippage: Math.round(totalSlippage),
+        totalCosts: Math.round(
+          totalFees + totalSlippage,
+        ),
+      },
+      signals,
+    };
+  }
+
+  private computeForwardMetrics(
+    candles: BrvmCandle[],
+    currentIndex: number,
+  ): ForwardMetrics {
+    const h10 =
+      this.computeHorizonMetrics(
+        candles,
+        currentIndex,
+        10,
+      );
+
+    const h20 =
+      this.computeHorizonMetrics(
+        candles,
+        currentIndex,
+        20,
+      );
+
+    const h60 =
+      this.computeHorizonMetrics(
+        candles,
+        currentIndex,
+        60,
+      );
+
+    return {
+      return10d: h10.return,
+      return20d: h20.return,
+      return60d: h60.return,
+      mfe10d: h10.mfe,
+      mfe20d: h20.mfe,
+      mfe60d: h60.mfe,
+      mae10d: h10.mae,
+      mae20d: h20.mae,
+      mae60d: h60.mae,
+    };
+  }
+
+  private computeHorizonMetrics(
+    candles: BrvmCandle[],
+    currentIndex: number,
+    horizon: number,
+  ): {
+    return: number | null;
+    mfe: number | null;
+    mae: number | null;
+  } {
+    const entryPrice =
+      candles[currentIndex]?.close;
+
+    if (!entryPrice || entryPrice <= 0) {
+      return {
+        return: null,
+        mfe: null,
+        mae: null,
+      };
+    }
+
+    const future =
+      candles.slice(
+        currentIndex + 1,
+        currentIndex + 1 + horizon,
+      );
+
+    if (future.length === 0) {
+      return {
+        return: null,
+        mfe: null,
+        mae: null,
+      };
+    }
+
+    let maxHigh = entryPrice;
+    let minLow = entryPrice;
+
+    for (const candle of future) {
+      maxHigh = Math.max(
+        maxHigh,
+        candle.high,
+      );
+
+      minLow = Math.min(
+        minLow,
+        candle.low,
+      );
+    }
+
+    const lastClose =
+      future[future.length - 1].close;
+
+    return {
+      return:
+        (lastClose - entryPrice) /
+        entryPrice,
+
+      mfe:
+        (maxHigh - entryPrice) /
+        entryPrice,
+
+      mae:
+        (minLow - entryPrice) /
+        entryPrice,
+    };
+  }
+
+  private calculatePerformanceMetrics(
+    signals: HistoricalSignal[],
+    positionSizeRate: number,
+  ): BacktestPerformance {
+    const empty: BacktestPerformance = {
+      winRate10d: 0,
+      winRate20d: 0,
+      winRate60d: 0,
+      averageMfe10d: 0,
+      averageMfe20d: 0,
+      averageMfe60d: 0,
+      averageMae10d: 0,
+      averageMae20d: 0,
+      averageMae60d: 0,
+      profitFactor: 0,
+      maxDrawdown: 0,
+      sharpeRatio: 0,
+      averageReturn10d: 0,
+      averageReturn20d: 0,
+      averageReturn60d: 0,
+      executedTradesCount: 0,
+      executedWinRate: 0,
+      totalNetReturn: 0,
+    };
+
+    if (signals.length === 0) {
+      return empty;
+    }
+
+    const returns10 =
+      this.extractReturns(
+        signals,
+        'return10d',
+      );
+
+    const returns20 =
+      this.extractReturns(
+        signals,
+        'return20d',
+      );
+
+    const returns60 =
+      this.extractReturns(
+        signals,
+        'return60d',
+      );
+
+    const mfe10 =
+      this.extractReturns(
+        signals,
+        'mfe10d',
+      );
+
+    const mfe20 =
+      this.extractReturns(
+        signals,
+        'mfe20d',
+      );
+
+    const mfe60 =
+      this.extractReturns(
+        signals,
+        'mfe60d',
+      );
+
+    const mae10 =
+      this.extractReturns(
+        signals,
+        'mae10d',
+      );
+
+    const mae20 =
+      this.extractReturns(
+        signals,
+        'mae20d',
+      );
+
+    const mae60 =
+      this.extractReturns(
+        signals,
+        'mae60d',
+      );
+
+    const trades =
+      signals.filter(
+        (s) =>
+          s.executed &&
+          s.netReturn !== undefined,
+      );
+
+    const wins =
+      trades.filter(
+        (s) =>
+          (s.netReturn ?? 0) > 0,
+      );
+
+    let grossProfit = 0;
+    let grossLoss = 0;
+
+    for (const trade of trades) {
+      const ret =
+        trade.netReturn ?? 0;
+
+      if (ret > 0) {
+        grossProfit += ret;
+      } else {
+        grossLoss += Math.abs(ret);
+      }
+    }
+
+    const profitFactor =
+      grossLoss === 0
+        ? grossProfit > 0
+          ? 99
+          : 0
+        : grossProfit / grossLoss;
+
+    /*
+     * Equity curve simplifiée basée sur les rendements
+     * nets des trades.
+     */
+    let equity = 1;
+    let peak = 1;
+    let maxDrawdown = 0;
+
+    const portfolioReturns: number[] = [];
+
+    for (const trade of trades) {
+      const ret =
+        trade.netReturn ?? 0;
+
+      /*
+       * Le rendement du trade ne représente
+       * qu'une partie du portefeuille.
+       *
+       * Exemple :
+       * positionSizeRate = 10 %
+       * trade = +20 %
+       * impact portefeuille = +2 %
+       */
+      const portfolioRet =
+        ret * positionSizeRate;
+
+      portfolioReturns.push(portfolioRet);
+
+      equity *= 1 + portfolioRet;
+
+      if (equity > peak) {
+        peak = equity;
+      }
+
+      const drawdown =
+        (peak - equity) / peak;
+
+      maxDrawdown =
+        Math.max(
+          maxDrawdown,
+          drawdown,
+        );
+    }
+
+    return {
+      winRate10d:
+        this.calculateWinRate(
+          returns10,
+        ),
+
+      winRate20d:
+        this.calculateWinRate(
+          returns20,
+        ),
+
+      winRate60d:
+        this.calculateWinRate(
+          returns60,
+        ),
+
+      averageMfe10d:
+        this.average(mfe10),
+
+      averageMfe20d:
+        this.average(mfe20),
+
+      averageMfe60d:
+        this.average(mfe60),
+
+      averageMae10d:
+        this.average(mae10),
+
+      averageMae20d:
+        this.average(mae20),
+
+      averageMae60d:
+        this.average(mae60),
+
+      profitFactor:
+        Math.round(
+          profitFactor * 100,
+        ) / 100,
+
+      maxDrawdown:
+        Math.round(
+          maxDrawdown * 10000,
+        ) / 100,
+
+      sharpeRatio:
+        this.calculateSharpe(
+          portfolioReturns,
+        ),
+
+      averageReturn10d:
+        this.average(returns10),
+
+      averageReturn20d:
+        this.average(returns20),
+
+      averageReturn60d:
+        this.average(returns60),
+
+      executedTradesCount:
+        trades.length,
+
+      executedWinRate:
+        trades.length > 0
+          ? Math.round(
+              (wins.length /
+                trades.length) *
+                10000,
+            ) / 100
+          : 0,
+
+      totalNetReturn:
+        Math.round(
+          (equity - 1) * 10000,
+        ) / 100,
+    };
+  }
+
+  private calculateSharpe(
+    returns: number[],
+  ): number {
+    if (returns.length < 2) {
+      return 0;
+    }
+
+    const mean =
+      returns.reduce(
+        (sum, value) =>
+          sum + value,
+        0,
+      ) / returns.length;
+
+    const variance =
+      returns.reduce(
+        (sum, value) =>
+          sum +
+          Math.pow(
+            value - mean,
+            2,
+          ),
+        0,
+      ) /
+      (returns.length - 1);
+
+    const std =
+      Math.sqrt(variance);
+
+    if (std === 0) {
+      return 0;
+    }
+
+    return Math.round(
+      (mean / std) *
+        Math.sqrt(returns.length) *
+        100,
+    ) / 100;
+  }
+
+  private incrementSignalCount(
+    action: string,
+    counts: Record<string, number>,
+  ): void {
+    switch (action) {
+      case 'BUY_NOW':
+        counts.buyNow++;
+        break;
+
+      case 'BUY_BREAKOUT':
+        counts.buyBreakout++;
+        break;
+
+      case 'WAIT_FOR_PULLBACK':
+        counts.waitForPullback++;
+        break;
+
+      case 'HOLD':
+        counts.hold++;
+        break;
+
+      case 'AVOID':
+        counts.avoid++;
+        break;
+    }
+  }
+
+  private extractReturns(
+    signals: HistoricalSignal[],
+    key: keyof ForwardMetrics,
+  ): number[] {
+    return signals
+      .map(
+        (signal) =>
+          signal.future[key],
+      )
+      .filter(
+        (value): value is number =>
+          value !== null,
+      );
+  }
+
+  private calculateWinRate(
+    returns: number[],
+  ): number {
+    if (returns.length === 0) {
+      return 0;
+    }
+
+    const wins =
+      returns.filter(
+        (value) => value > 0,
+      ).length;
+
+    return Math.round(
+      (wins / returns.length) *
+        10000,
+    ) / 100;
+  }
+
+  private average(
+    values: number[],
+  ): number {
+    if (values.length === 0) {
+      return 0;
+    }
+
+    const sum =
+      values.reduce(
+        (a, b) => a + b,
+        0,
+      );
+
+    return Math.round(
+      (sum / values.length) *
+        10000,
+    ) / 100;
+  }
+
+  private sanitizeRate(
+    rate: number,
+  ): number {
+    return this.clamp(
+      rate,
+      0,
+      0.1,
+    );
+  }
+
+  private clamp(
+    value: number,
+    min: number,
+    max: number,
+  ): number {
+    return Math.max(
+      min,
+      Math.min(max, value),
+    );
+  }
+
+  private formatDate(
+    date: Date,
+  ): string {
+    return date
+      .toISOString()
+      .split('T')[0];
+  }
+
+  /**
+   * Backtest global de toutes les actions du catalogue BRVM.
+   *
+   * Objectif :
+   * - tester chaque ticker avec exactement les mêmes paramètres ;
+   * - ne pas faire exploser les requêtes réseau ;
+   * - retourner les résultats individuels ;
+   * - produire un classement comparable entre les titres.
+   */
+  async backtestAll(options: BacktestOptions = {}) {
+    const catalog = await this.brvmService.getCatalog();
+
+    const tickers = catalog.companies
+      .map((company) => company.ticker.trim().toUpperCase())
+      .filter(Boolean);
+
+    const results: Array<{
+      ticker: string;
+      name: string;
+      country: string;
+      status: 'OK' | 'INSUFFICIENT_HISTORY' | 'ERROR';
+      result?: BacktestResult;
+      error?: string;
+    }> = [];
+
+    /*
+     * On limite volontairement la concurrence.
+     * La source BRVM peut nécessiter une requête réseau par ticker.
+     */
+    const concurrency = 4;
+
+    for (let start = 0; start < tickers.length; start += concurrency) {
+      const batch = tickers.slice(start, start + concurrency);
+
+      const batchResults = await Promise.all(
+        batch.map(async (ticker) => {
+          const company = catalog.companies.find(
+            (c) => c.ticker.trim().toUpperCase() === ticker,
+          );
+
+          try {
+            const result = await this.backtestTicker(ticker, options);
+
+            return {
+              ticker,
+              name: company?.name ?? ticker,
+              country: company?.country ?? '',
+              status: 'OK' as const,
+              result,
+            };
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : String(error);
+
+            const insufficientHistory =
+              message.toLowerCase().includes('historique insuffisant');
+
+            return {
+              ticker,
+              name: company?.name ?? ticker,
+              country: company?.country ?? '',
+              status: insufficientHistory
+                ? ('INSUFFICIENT_HISTORY' as const)
+                : ('ERROR' as const),
+              error: message,
+            };
+          }
+        }),
+      );
+
+      results.push(...batchResults);
+    }
+
+    const successful = results.filter(
+      (
+        item,
+      ): item is typeof item & {
+        result: BacktestResult;
+      } => item.status === 'OK' && item.result !== undefined,
+    );
+
+    /*
+     * Classement volontairement simple pour V1.
+     *
+     * On ne cherche PAS encore à fabriquer un score magique.
+     * On conserve les métriques brutes pour éviter l'overfitting.
+     *
+     * Priorité :
+     * 1. Profit Factor
+     * 2. rendement net total
+     * 3. taux de réussite des trades
+     * 4. nombre de trades
+     */
+    successful.sort((a, b) => {
+      const pfA = Number.isFinite(a.result.performance.profitFactor)
+        ? a.result.performance.profitFactor
+        : -Infinity;
+
+      const pfB = Number.isFinite(b.result.performance.profitFactor)
+        ? b.result.performance.profitFactor
+        : -Infinity;
+
+      if (pfB !== pfA) return pfB - pfA;
+
+      const returnA = a.result.performance.totalNetReturn ?? -Infinity;
+      const returnB = b.result.performance.totalNetReturn ?? -Infinity;
+
+      if (returnB !== returnA) return returnB - returnA;
+
+      const winA = a.result.performance.executedWinRate ?? -Infinity;
+      const winB = b.result.performance.executedWinRate ?? -Infinity;
+
+      if (winB !== winA) return winB - winA;
+
+      return (
+        b.result.performance.executedTradesCount -
+        a.result.performance.executedTradesCount
+      );
+    });
+
+    const ranking = successful.map((item, index) => {
+      const p = item.result.performance;
+
+      return {
+        rank: index + 1,
+        ticker: item.ticker,
+        name: item.name,
+        country: item.country,
+
+        initialCapital: item.result.initialCapital,
+        finalCapital: item.result.finalCapital,
+
+        totalSignals: item.result.totalSignals,
+        executedTradesCount: p.executedTradesCount,
+
+        winRate10d: p.winRate10d,
+        winRate20d: p.winRate20d,
+        winRate60d: p.winRate60d,
+
+        executedWinRate: p.executedWinRate,
+
+        averageReturn10d: p.averageReturn10d,
+        averageReturn20d: p.averageReturn20d,
+        averageReturn60d: p.averageReturn60d,
+
+        profitFactor: p.profitFactor,
+        maxDrawdown: p.maxDrawdown,
+        sharpeRatio: p.sharpeRatio,
+
+        totalNetReturn: p.totalNetReturn,
+
+        totalFees: item.result.costs.totalFees,
+        totalSlippage: item.result.costs.totalSlippage,
+        totalCosts: item.result.costs.totalCosts,
+      };
+    });
+
+    return {
+      period: {
+        from: options.from ?? null,
+        to: options.to ?? null,
+      },
+
+      parameters: {
+        initialCapital: options.initialCapital ?? 1_000_000,
+        feeRate: options.feeRate ?? null,
+        slippageRate: options.slippageRate ?? null,
+        positionSizeRate: options.positionSizeRate ?? null,
+        maxHoldingSessions: options.maxHoldingSessions ?? null,
+      },
+
+      summary: {
+        totalTickers: tickers.length,
+        successful: successful.length,
+        insufficientHistory: results.filter(
+          (r) => r.status === 'INSUFFICIENT_HISTORY',
+        ).length,
+        errors: results.filter((r) => r.status === 'ERROR').length,
+      },
+
+      ranking,
+
+      failures: results
+        .filter((r) => r.status !== 'OK')
+        .map((r) => ({
+          ticker: r.ticker,
+          name: r.name,
+          country: r.country,
+          status: r.status,
+          error: r.error,
+        })),
+    };
+  }
+
+}

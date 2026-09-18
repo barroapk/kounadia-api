@@ -146,7 +146,22 @@ export class StandingsService {
       return cached.data;
     }
 
-    const result = await this.apiFootballService.getStandingsByLeagueId(leagueId, resolvedSeason);
+    let result: { standings: any[]; emblem: string | null } | null = null;
+    let unavailableReason: string | undefined;
+
+    try {
+      result = await this.apiFootballService.getStandingsByLeagueId(leagueId, resolvedSeason);
+    } catch (error: any) {
+      if (error.message?.startsWith('PLAN_RESTRICTED:')) {
+        // Abonnement API-Football insuffisant pour cette saison (ex: retombe
+        // sur un plan gratuit) : on le signale distinctement d'un "aucune
+        // donnee" normal, pour ne pas induire l'utilisateur en erreur.
+        unavailableReason = "Cette compétition n'est temporairement pas disponible (accès fournisseur limité).";
+      } else {
+        throw error;
+      }
+    }
+
     const standings = this.normalizeApiFootballStandings(result?.standings ?? []);
 
     const apiSeasons = await this.apiFootballService.getLeagueSeasons(leagueId);
@@ -161,6 +176,7 @@ export class StandingsService {
       totalTeams: standings.length,
       lastUpdated: new Date().toISOString(),
       standings,
+      ...(unavailableReason ? { unavailableReason } : {}),
     };
 
     this.cache.set(cacheKey, { data: response, expiresAt: now + this.CACHE_DURATION_MS });

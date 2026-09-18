@@ -1,0 +1,698 @@
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BrvmService } from './brvm.service';
+import { BrvmTradingService } from './brvm-trading.service';
+import { BrvmCandle } from './brvm.types';
+
+export interface BacktestOptions {
+  from?: string;
+  to?: string;
+  initialCapital?: number;
+
+  // 0.006 = 0,6 %
+  feeRate?: number;
+
+  // 0.002 = 0,2 %
+  slippageRate?: number;
+
+  // Capital maximum engagé par signal.
+  positionSizeRate?: number;
+
+  // Nombre de séances avant expiration d'un signal.
+  maxHoldingSessions?: number;
+}
+
+export interface ForwardMetrics {
+  return10d: number | null;
+  return20d: number | null;
+  return60d: number | null;
+  mfe10d: number | null;
+  mfe20d: number | null;
+  mfe60d: number | null;
+  mae10d: number | null;
+  mae20d: number | null;
+  mae60d: number | null;
+}
+
+export interface HistoricalSignal {
+  date: string;
+  ticker: string;
+  price: number;
+  score: number;
+  timingScore: number;
+  action: string;
+  future: ForwardMetrics;
+}
+
+export interface BacktestPerformance {
+  winRate10d: number;
+  winRate20d: number;
+  winRate60d: number;
+
+  averageMfe10d: number;
+  averageMfe20d: number;
+  averageMfe60d: number;
+
+  averageMae10d: number;
+  averageMae20d: number;
+  averageMae60d: number;
+
+  profitFactor: number;
+  maxDrawdown: number;
+  sharpeRatio: number;
+
+  averageReturn10d: number;
+  averageReturn20d: number;
+  averageReturn60d: number;
+}
+
+export interface BacktestResult {
+  ticker: string;
+
+  period: {
+    from: string;
+    to: string;
+  };
+
+  initialCapital: number;
+
+  totalSignals: number;
+
+  signalsCount: {
+    buyNow: number;
+    buyBreakout: number;
+    waitForPullback: number;
+    hold: number;
+    avoid: number;
+  };
+
+  performance: BacktestPerformance;
+
+  costs: {
+    totalFees: number;
+    totalSlippage: number;
+    totalCosts: number;
+  };
+
+  signals: HistoricalSignal[];
+}
+
+@Injectable()
+export class BrvmBacktestService {
+  private readonly logger = new Logger(BrvmBacktestService.name);
+
+  constructor(
+    private readonly brvmService: BrvmService,
+    private readonly tradingService: BrvmTradingService,
+  ) {}
+
+  async backtestTicker(
+    ticker: string,
+    options: BacktestOptions = {},
+  ): Promise<BacktestResult> {
+    const symbol = ticker.toUpperCase();
+
+    const candles: BrvmCandle[] = await this.brvmService.getHistory(symbol);
+
+    if (!candles || candles.length < 80) {
+      throw new NotFoundException(
+        `Historique insuffisant pour le backtest de ${symbol}. ` +
+        `Minimum recommandé : 80 séances.`,
+      );
+    }
+
+    const feeRate = this.sanitizeRate(options.feeRate ?? 0.006);
+    const slippageRate = this.sanitizeRate(options.slippageRate ?? 0.002);
+
+    const initialCapital = options.initialCapital ?? 1_000_000;
+    const positionSizeRate = this.clamp(
+      options.positionSizeRate ?? 0.10,
+      0.01,
+      1,
+    );
+
+    const maxHoldingSessions = Math.max(
+      1,
+      Math.floor(options.maxHoldingSessions ?? 60),
+    );
+
+    const fromDate = options.from
+      ? new Date(options.from)
+      : new Date(candles[50].date);
+
+    const toDate = options.to
+      ? new Date(options.to)
+      : new Date(candles[candles.length - 1].date);
+
+    if (
+      Number.isNaN(fromDate.getTime()) ||
+      Number.isNaN(toDate.getTime())
+    ) {
+      throw new Error('Date de backtest invalide.');
+    }
+
+    const signalsCount = {
+      buyNow: 0,
+      buyBreakout: 0,
+      waitForPullback: 0,
+      hold: 0,
+      avoid: 0,
+    };
+
+    const recordedSignals: HistoricalSignal[] = [];
+
+    let totalFees = 0;
+    let totalSlippage = 0;
+
+    /*
+     * IMPORTANT :
+     * Nous simulons le moteur exactement comme il aurait fonctionné
+     * à la date T.
+     *
+     * candles.slice(0, i + 1)
+     *
+     * empêche le moteur d'avoir accès aux données futures.
+     */
+    for (let i = 50; i < candles.length - 1; i++) {
+      const currentCandle = candles[i];
+
+      const currentDate = new Date(currentCandle.date);
+
+      if (currentDate < fromDate || currentDate > toDate) {
+        continue;
+      }
+
+      const historicalWindow = candles.slice(0, i + 1);
+
+      let tradingResult;
+
+      try {
+        tradingResult = await this.tradingService.computeForTicker(
+          symbol,
+          historicalWindow,
+        );
+      } catch (error) {
+        this.logger.warn(
+          `Erreur calcul signal ${symbol} ${currentCandle.date}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        continue;
+      }
+
+      if (!tradingResult?.entryAnalysis) {
+        continue;
+      }
+
+      const action = tradingResult.entryAnalysis.action;
+
+      this.incrementSignalCount(action, signalsCount);
+
+      /*
+       * Pour la baseline, nous enregistrons uniquement les signaux
+       * réellement exploitables.
+       */
+      const isOpportunity =
+        action === 'BUY_NOW' ||
+        action === 'BUY_BREAKOUT' ||
+        action === 'WAIT_FOR_PULLBACK';
+
+      if (!isOpportunity) {
+        continue;
+      }
+
+      const forward = this.computeForwardMetrics(candles, i);
+
+      const entryPrice = currentCandle.close;
+
+      if (!entryPrice || entryPrice <= 0) {
+        continue;
+      }
+
+      /*
+       * Coûts théoriques.
+       *
+       * On ne les calcule pas simplement comme :
+       * prix * frais.
+       *
+       * On estime une position à partir du capital.
+       */
+      const allocatedCapital = initialCapital * positionSizeRate;
+
+      const entrySlippage = entryPrice * slippageRate;
+      const effectiveEntryPrice = entryPrice + entrySlippage;
+
+      const quantity = Math.floor(
+        allocatedCapital / effectiveEntryPrice,
+      );
+
+      if (quantity <= 0) {
+        continue;
+      }
+
+      const grossEntryValue = quantity * effectiveEntryPrice;
+      const entryFee = grossEntryValue * feeRate;
+
+      /*
+       * Pour mesurer correctement les coûts du scénario,
+       * on estime également une sortie à 20 séances.
+       *
+       * Ce n'est PAS encore le portefeuille complet.
+       * C'est une baseline statistique.
+       */
+      const exitIndex = Math.min(i + 20, candles.length - 1);
+      const exitCandle = candles[exitIndex];
+
+      const exitSlippage = exitCandle.close * slippageRate;
+      const effectiveExitPrice = Math.max(
+        0,
+        exitCandle.close - exitSlippage,
+      );
+
+      const grossExitValue = quantity * effectiveExitPrice;
+      const exitFee = grossExitValue * feeRate;
+
+      totalFees += entryFee + exitFee;
+      totalSlippage +=
+        quantity * entrySlippage +
+        quantity * exitSlippage;
+
+      recordedSignals.push({
+        date: currentCandle.date,
+        ticker: symbol,
+        price: entryPrice,
+        score: tradingResult.score,
+        timingScore: tradingResult.entryAnalysis.timingScore,
+        action,
+        future: forward,
+      });
+    }
+
+    const performance = this.calculatePerformanceMetrics(
+      recordedSignals,
+      feeRate,
+      slippageRate,
+    );
+
+    return {
+      ticker: symbol,
+
+      period: {
+        from: this.formatDate(fromDate),
+        to: this.formatDate(toDate),
+      },
+
+      initialCapital,
+
+      totalSignals: recordedSignals.length,
+
+      signalsCount,
+
+      performance,
+
+      costs: {
+        totalFees: Math.round(totalFees),
+        totalSlippage: Math.round(totalSlippage),
+        totalCosts: Math.round(totalFees + totalSlippage),
+      },
+
+      signals: recordedSignals,
+    };
+  }
+
+  private computeForwardMetrics(
+    candles: BrvmCandle[],
+    currentIndex: number,
+  ): ForwardMetrics {
+    const h10 = this.computeHorizonMetrics(candles, currentIndex, 10);
+    const h20 = this.computeHorizonMetrics(candles, currentIndex, 20);
+    const h60 = this.computeHorizonMetrics(candles, currentIndex, 60);
+
+    const result: ForwardMetrics = {
+      return10d: h10.return,
+      return20d: h20.return,
+      return60d: h60.return,
+
+      mfe10d: h10.mfe,
+      mfe20d: h20.mfe,
+      mfe60d: h60.mfe,
+
+      mae10d: h10.mae,
+      mae20d: h20.mae,
+      mae60d: h60.mae,
+    };
+
+    return result;
+  }
+
+  private computeHorizonMetrics(
+    candles: BrvmCandle[],
+    currentIndex: number,
+    horizon: number,
+  ): Record<string, number | null> {
+    const entryPrice = candles[currentIndex]?.close;
+
+    if (!entryPrice || entryPrice <= 0) {
+      return {
+        [`return${horizon}d`]: null,
+        [`mfe${horizon}d`]: null,
+        [`mae${horizon}d`]: null,
+      };
+    }
+
+    const future = candles.slice(
+      currentIndex + 1,
+      currentIndex + 1 + horizon,
+    );
+
+    if (future.length === 0) {
+      return {
+        [`return${horizon}d`]: null,
+        [`mfe${horizon}d`]: null,
+        [`mae${horizon}d`]: null,
+      };
+    }
+
+    let maxHigh = entryPrice;
+    let minLow = entryPrice;
+
+    for (const candle of future) {
+      if (candle.high > maxHigh) {
+        maxHigh = candle.high;
+      }
+
+      if (candle.low < minLow) {
+        minLow = candle.low;
+      }
+    }
+
+    const lastClose = future[future.length - 1].close;
+
+    return {
+      [`return${horizon}d`]:
+        (lastClose - entryPrice) / entryPrice,
+
+      [`mfe${horizon}d`]:
+        (maxHigh - entryPrice) / entryPrice,
+
+      [`mae${horizon}d`]:
+        (minLow - entryPrice) / entryPrice,
+    };
+  }
+
+  private calculatePerformanceMetrics(
+    signals: HistoricalSignal[],
+    feeRate: number,
+    slippageRate: number,
+  ): BacktestPerformance {
+    const empty: BacktestPerformance = {
+      winRate10d: 0,
+      winRate20d: 0,
+      winRate60d: 0,
+
+      averageMfe10d: 0,
+      averageMfe20d: 0,
+      averageMfe60d: 0,
+
+      averageMae10d: 0,
+      averageMae20d: 0,
+      averageMae60d: 0,
+
+      profitFactor: 0,
+      maxDrawdown: 0,
+      sharpeRatio: 0,
+
+      averageReturn10d: 0,
+      averageReturn20d: 0,
+      averageReturn60d: 0,
+    };
+
+    if (signals.length === 0) {
+      return empty;
+    }
+
+    const effectiveCost =
+      feeRate * 2 +
+      slippageRate * 2;
+
+    const returns10 = this.extractReturns(
+      signals,
+      'return10d',
+    );
+
+    const returns20 = this.extractReturns(
+      signals,
+      'return20d',
+    );
+
+    const returns60 = this.extractReturns(
+      signals,
+      'return60d',
+    );
+
+    const mfe10 = this.extractReturns(
+      signals,
+      'mfe10d',
+    );
+
+    const mfe20 = this.extractReturns(
+      signals,
+      'mfe20d',
+    );
+
+    const mfe60 = this.extractReturns(
+      signals,
+      'mfe60d',
+    );
+
+    const mae10 = this.extractReturns(
+      signals,
+      'mae10d',
+    );
+
+    const mae20 = this.extractReturns(
+      signals,
+      'mae20d',
+    );
+
+    const mae60 = this.extractReturns(
+      signals,
+      'mae60d',
+    );
+
+    const net20 = returns20.map(
+      (value) => value - effectiveCost,
+    );
+
+    let grossProfit = 0;
+    let grossLoss = 0;
+
+    for (const value of net20) {
+      if (value > 0) {
+        grossProfit += value;
+      } else {
+        grossLoss += Math.abs(value);
+      }
+    }
+
+    const profitFactor =
+      grossLoss === 0
+        ? grossProfit > 0
+          ? 99
+          : 0
+        : grossProfit / grossLoss;
+
+    /*
+     * Drawdown sur séquence de rendements.
+     *
+     * Il s'agit d'une mesure de baseline.
+     * Le Portfolio Backtester complet viendra ensuite.
+     */
+    let equity = 1;
+    let peak = 1;
+    let maxDrawdown = 0;
+
+    for (const ret of net20) {
+      equity *= 1 + ret;
+
+      if (equity > peak) {
+        peak = equity;
+      }
+
+      const drawdown = (peak - equity) / peak;
+
+      if (drawdown > maxDrawdown) {
+        maxDrawdown = drawdown;
+      }
+    }
+
+    const mean20 = this.mean(net20);
+    const std20 = this.standardDeviation(net20);
+
+    const sharpeRatio =
+      std20 === 0
+        ? 0
+        : mean20 / std20;
+
+    return {
+      winRate10d: this.winRate(returns10, effectiveCost),
+      winRate20d: this.winRate(returns20, effectiveCost),
+      winRate60d: this.winRate(returns60, effectiveCost),
+
+      averageMfe10d: this.mean(mfe10),
+      averageMfe20d: this.mean(mfe20),
+      averageMfe60d: this.mean(mfe60),
+
+      averageMae10d: this.mean(mae10),
+      averageMae20d: this.mean(mae20),
+      averageMae60d: this.mean(mae60),
+
+      profitFactor: this.round(profitFactor, 2),
+      maxDrawdown: this.round(maxDrawdown, 4),
+      sharpeRatio: this.round(sharpeRatio, 2),
+
+      averageReturn10d: this.mean(returns10),
+      averageReturn20d: this.mean(returns20),
+      averageReturn60d: this.mean(returns60),
+    };
+  }
+
+  private extractReturns(
+    signals: HistoricalSignal[],
+    field:
+      | 'return10d'
+      | 'return20d'
+      | 'return60d'
+      | 'mfe10d'
+      | 'mfe20d'
+      | 'mfe60d'
+      | 'mae10d'
+      | 'mae20d'
+      | 'mae60d',
+  ): number[] {
+    return signals
+      .map((signal) => signal.future[field])
+      .filter(
+        (value): value is number =>
+          typeof value === 'number' &&
+          Number.isFinite(value),
+      );
+  }
+
+  private winRate(
+    returns: number[],
+    costRatio: number,
+  ): number {
+    if (returns.length === 0) {
+      return 0;
+    }
+
+    const wins = returns.filter(
+      (value) => value > costRatio,
+    ).length;
+
+    return this.round(
+      wins / returns.length,
+      4,
+    );
+  }
+
+  private mean(values: number[]): number {
+    if (values.length === 0) {
+      return 0;
+    }
+
+    return this.round(
+      values.reduce((sum, value) => sum + value, 0) /
+        values.length,
+      4,
+    );
+  }
+
+  private standardDeviation(values: number[]): number {
+    if (values.length < 2) {
+      return 0;
+    }
+
+    const avg = this.meanRaw(values);
+
+    const variance =
+      values.reduce(
+        (sum, value) =>
+          sum + Math.pow(value - avg, 2),
+        0,
+      ) / values.length;
+
+    return Math.sqrt(variance);
+  }
+
+  private meanRaw(values: number[]): number {
+    return (
+      values.reduce(
+        (sum, value) => sum + value,
+        0,
+      ) / values.length
+    );
+  }
+
+  private incrementSignalCount(
+    action: string,
+    counts: BacktestResult['signalsCount'],
+  ): void {
+    switch (action) {
+      case 'BUY_NOW':
+        counts.buyNow++;
+        break;
+
+      case 'BUY_BREAKOUT':
+        counts.buyBreakout++;
+        break;
+
+      case 'WAIT_FOR_PULLBACK':
+        counts.waitForPullback++;
+        break;
+
+      case 'HOLD':
+        counts.hold++;
+        break;
+
+      default:
+        counts.avoid++;
+        break;
+    }
+  }
+
+  private sanitizeRate(value: number): number {
+    if (!Number.isFinite(value) || value < 0) {
+      return 0;
+    }
+
+    return Math.min(value, 1);
+  }
+
+  private clamp(
+    value: number,
+    min: number,
+    max: number,
+  ): number {
+    return Math.max(
+      min,
+      Math.min(max, value),
+    );
+  }
+
+  private round(
+    value: number,
+    decimals: number,
+  ): number {
+    const factor = Math.pow(10, decimals);
+
+    return (
+      Math.round(value * factor) /
+      factor
+    );
+  }
+
+  private formatDate(date: Date): string {
+    return date.toISOString().split('T')[0];
+  }
+}
