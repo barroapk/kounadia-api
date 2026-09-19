@@ -51,6 +51,7 @@ export interface SportsDataProvider {
   getLiveMatches(): Promise<Match[]>;
   getTodayMatches(): Promise<Match[]>;
   getRecentFinishedMatches(days: number): Promise<Match[]>;
+  getFinishedMatchesBetween(dateFrom: Date, dateTo: Date): Promise<Match[]>;
   getMatchById(id: number): Promise<Match>;
   getMatchesByDate(date: string): Promise<Match[]>;
   getStandings(competitionCode: string, season?: string): Promise<StandingRow[]>;

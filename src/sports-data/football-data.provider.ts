@@ -67,7 +67,16 @@ export class FootballDataProvider implements SportsDataProvider {
     const safeDays = Math.min(days, 10);
     const dateTo = new Date();
     const dateFrom = new Date(Date.now() - safeDays * 86400000);
+    return this.getFinishedMatchesBetween(dateFrom, dateTo);
+  }
 
+  /**
+   * Comme getRecentFinishedMatches, mais avec une plage de dates arbitraire
+   * (pas seulement "les X derniers jours"). Utile pour un rattrapage
+   * historique cible (ex: combler un trou de synchronisation passe), la ou
+   * getRecentFinishedMatches est plafonne a 10 jours pour l'usage courant.
+   */
+  async getFinishedMatchesBetween(dateFrom: Date, dateTo: Date): Promise<Match[]> {
     const response = await firstValueFrom(
       this.http.get(
         `${this.baseUrl}/matches?dateFrom=${this.formatDate(dateFrom)}&dateTo=${this.formatDate(dateTo)}&status=FINISHED`,

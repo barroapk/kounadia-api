@@ -59,4 +59,50 @@ export class MatchesSyncService {
       message: 'Synchronisation terminée.',
     };
   }
+
+  /**
+   * Rattrapage historique cible sur une vraie plage de dates (pas plafonne
+   * a 10 jours comme syncFinishedMatches). A utiliser ponctuellement pour
+   * combler un trou de synchronisation passe.
+   */
+  async syncFinishedMatchesBetween(dateFrom: Date, dateTo: Date): Promise<{
+    success: boolean;
+    checked: number;
+    imported: number;
+    message: string;
+  }> {
+    const matches = await this.sportsDataProvider.getFinishedMatchesBetween(dateFrom, dateTo);
+
+    if (matches.length === 0) {
+      return { success: true, checked: 0, imported: 0, message: 'Aucun match terminé trouvé sur cette période.' };
+    }
+
+    const rows = matches.map((m) => ({
+      id: m.id,
+      competition: m.competition,
+      home_team: m.homeTeam,
+      away_team: m.awayTeam,
+      home_score: m.homeScore,
+      away_score: m.awayScore,
+      status: m.status,
+      utc_date: m.utcDate,
+    }));
+
+    const { error } = await this.supabase.client
+      .from('match_history')
+      .upsert(rows, { onConflict: 'id' });
+
+    if (error) {
+      this.logger.error('Erreur de synchronisation (plage)', error);
+      throw error;
+    }
+
+    this.logger.log(`Rattrapage : ${rows.length} match(s) synchronisé(s) entre ${dateFrom.toISOString()} et ${dateTo.toISOString()}`);
+    return {
+      success: true,
+      checked: matches.length,
+      imported: rows.length,
+      message: 'Rattrapage terminé.',
+    };
+  }
 }
