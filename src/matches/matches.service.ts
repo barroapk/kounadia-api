@@ -20,7 +20,8 @@ export class MatchesService {
   private liveCache: CacheEntry | null = null;
   private todayCache: CacheEntry | null = null;
   private byDateCache = new Map<string, CacheEntry>();
-  private readonly CACHE_DURATION_MS = 30000;
+  private readonly LIVE_CACHE_DURATION_MS = 30000; // Scores en direct : rester tres frais
+  private readonly TODAY_CACHE_DURATION_MS = 300000; // Matchs du jour (pas de score en direct) : aligne avec le ping UptimeRobot toutes les 5 min
   private readonly DATE_CACHE_DURATION_MS = 300000;
 
   constructor(
@@ -81,7 +82,7 @@ export class MatchesService {
 
     const extraLive = extraToday.filter((m) => LIVE_STATUSES.includes(m.status));
     const combined = [...footballDataLive, ...extraLive];
-    this.liveCache = { data: combined, expiresAt: now + this.CACHE_DURATION_MS };
+    this.liveCache = { data: combined, expiresAt: now + this.LIVE_CACHE_DURATION_MS };
     return this.enrichWithLiveMinutes(combined);
   }
 
@@ -107,7 +108,7 @@ export class MatchesService {
     );
 
     const combined = [...footballDataToday, ...stillLiveFromYesterday, ...extraToday];
-    this.todayCache = { data: combined, expiresAt: now + this.CACHE_DURATION_MS };
+    this.todayCache = { data: combined, expiresAt: now + this.TODAY_CACHE_DURATION_MS };
     return this.enrichWithLiveMinutes(combined);
   }
 
