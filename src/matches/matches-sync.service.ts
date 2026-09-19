@@ -71,37 +71,53 @@ export class MatchesSyncService {
     imported: number;
     message: string;
   }> {
-    const matches = await this.sportsDataProvider.getFinishedMatchesBetween(dateFrom, dateTo);
+    // football-data.org refuse toute plage superieure a 10 jours
+    // ("Specified period must not exceed 10 days") : on decoupe la
+    // plage demandee en tranches de 10 jours maximum, appelees
+    // sequentiellement.
+    const MAX_WINDOW_DAYS = 10;
+    let totalChecked = 0;
+    let totalImported = 0;
 
-    if (matches.length === 0) {
-      return { success: true, checked: 0, imported: 0, message: 'Aucun match terminé trouvé sur cette période.' };
+    let windowStart = new Date(dateFrom);
+    while (windowStart < dateTo) {
+      const windowEnd = new Date(Math.min(windowStart.getTime() + MAX_WINDOW_DAYS * 86400000, dateTo.getTime()));
+
+      const matches = await this.sportsDataProvider.getFinishedMatchesBetween(windowStart, windowEnd);
+      totalChecked += matches.length;
+
+      if (matches.length > 0) {
+        const rows = matches.map((m) => ({
+          id: m.id,
+          competition: m.competition,
+          home_team: m.homeTeam,
+          away_team: m.awayTeam,
+          home_score: m.homeScore,
+          away_score: m.awayScore,
+          status: m.status,
+          utc_date: m.utcDate,
+        }));
+
+        const { error } = await this.supabase.client
+          .from('match_history')
+          .upsert(rows, { onConflict: 'id' });
+
+        if (error) {
+          this.logger.error('Erreur de synchronisation (plage)', error);
+          throw error;
+        }
+
+        totalImported += rows.length;
+        this.logger.log(`Rattrapage : ${rows.length} match(s) entre ${windowStart.toISOString()} et ${windowEnd.toISOString()}`);
+      }
+
+      windowStart = windowEnd;
     }
 
-    const rows = matches.map((m) => ({
-      id: m.id,
-      competition: m.competition,
-      home_team: m.homeTeam,
-      away_team: m.awayTeam,
-      home_score: m.homeScore,
-      away_score: m.awayScore,
-      status: m.status,
-      utc_date: m.utcDate,
-    }));
-
-    const { error } = await this.supabase.client
-      .from('match_history')
-      .upsert(rows, { onConflict: 'id' });
-
-    if (error) {
-      this.logger.error('Erreur de synchronisation (plage)', error);
-      throw error;
-    }
-
-    this.logger.log(`Rattrapage : ${rows.length} match(s) synchronisé(s) entre ${dateFrom.toISOString()} et ${dateTo.toISOString()}`);
     return {
       success: true,
-      checked: matches.length,
-      imported: rows.length,
+      checked: totalChecked,
+      imported: totalImported,
       message: 'Rattrapage terminé.',
     };
   }
