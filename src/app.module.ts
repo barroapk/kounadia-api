@@ -11,6 +11,7 @@ import { ApiFootballModule } from './api-football/api-football.module';
 import { TeamFormModule } from './team-form/team-form.module';
 import { PredictionsModule } from './predictions/predictions.module';
 import { EloModule } from './elo/elo.module';
+import { OrderedLogitModule } from './prediction/ordered-logit/ordered-logit.module';
 import { ExtraCompetitionsModule } from './extra-competitions/extra-competitions.module';
 import { StandingsModule } from './standings/standings.module';
 import { CalendarModule } from './calendar/calendar.module';
@@ -28,6 +29,7 @@ import { BrvmModule } from './stock-market/brvm/brvm.module';
     TeamFormModule,
     PredictionsModule,
     EloModule,
+    OrderedLogitModule,
     ExtraCompetitionsModule,
     StandingsModule,
     CalendarModule,
