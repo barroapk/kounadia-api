@@ -18,6 +18,7 @@ import { CalendarModule } from './calendar/calendar.module';
 import { BrvmModule } from './stock-market/brvm/brvm.module';
 import { TipsModule } from './tips/tips.module';
 import { ScoregptModule } from './scoregpt/scoregpt.module';
+import { NerdytipsModule } from './nerdytips/nerdytips.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { ScoregptModule } from './scoregpt/scoregpt.module';
     BrvmModule,
     TipsModule,
     ScoregptModule,
+    NerdytipsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
