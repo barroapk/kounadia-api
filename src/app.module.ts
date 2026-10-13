@@ -16,6 +16,7 @@ import { ExtraCompetitionsModule } from './extra-competitions/extra-competitions
 import { StandingsModule } from './standings/standings.module';
 import { CalendarModule } from './calendar/calendar.module';
 import { BrvmModule } from './stock-market/brvm/brvm.module';
+import { TipsModule } from './tips/tips.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { BrvmModule } from './stock-market/brvm/brvm.module';
     StandingsModule,
     CalendarModule,
     BrvmModule,
+    TipsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
