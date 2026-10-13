@@ -17,6 +17,7 @@ import { StandingsModule } from './standings/standings.module';
 import { CalendarModule } from './calendar/calendar.module';
 import { BrvmModule } from './stock-market/brvm/brvm.module';
 import { TipsModule } from './tips/tips.module';
+import { ScoregptModule } from './scoregpt/scoregpt.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { TipsModule } from './tips/tips.module';
     CalendarModule,
     BrvmModule,
     TipsModule,
+    ScoregptModule,
   ],
   controllers: [AppController],
   providers: [AppService],
