@@ -6,6 +6,7 @@ const UA = 'KOUNADIA-Bot/1.0 (+https://kounadia-api.onrender.com)';
 const TTL = 3 * 3600 * 1000;
 const RETRY = 10 * 60 * 1000;
 const KEEP = 3 * 86400000;
+const MAX_ENRICH = 10;
 
 const LEAGUES: Record<string, string> = {
   'champions-league': 'Ligue des champions',
@@ -24,6 +25,8 @@ const norm = (s: string) =>
   s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const decode = (s: string) =>
   s.replace(/&amp;/g, '&').replace(/&#39;|&#x27;/g, "'").replace(/&quot;/g, '"').trim();
+const labelOf = (pickTeam: string) =>
+  /^(draw|nul)/i.test(pickTeam.trim()) ? 'Match nul' : `Victoire ${decode(pickTeam)}`;
 
 export interface SgMatch {
   date: string;
@@ -41,13 +44,21 @@ export interface SgMatch {
 
 export interface SgResult {
   date: string;
+  hasTime: boolean;
   leagueName: string;
   home: string;
   away: string;
   tipFr: string;
+  predicted: string | null;
   score: string;
   won: boolean;
   url: string;
+}
+
+interface Known {
+  label: string;
+  predicted: string;
+  date: string;
 }
 
 @Injectable()
@@ -57,7 +68,7 @@ export class ScoregptService {
   private cachedAt = 0;
   private results: SgResult[] = [];
   private resultsAt = 0;
-  private known = new Map<string, string>();
+  private known = new Map<string, Known>();
 
   async getToday() {
     if (Date.now() - this.cachedAt > TTL) {
@@ -83,7 +94,9 @@ export class ScoregptService {
         } catch {}
         const r = await fetch(HOME, { headers: { 'User-Agent': UA } });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        this.results = this.merge(this.parseResults(await r.text()));
+        const fresh = this.parseResults(await r.text());
+        await this.enrich(fresh);
+        this.results = this.merge(fresh);
         this.resultsAt = Date.now();
       } catch (e) {
         this.log.warn(`ScoreGPT résultats indisponibles : ${e}`);
@@ -92,6 +105,47 @@ export class ScoregptService {
       }
     }
     return { source: 'ScoreGPT — https://scoregpt.app', results: this.results };
+  }
+
+  private apply(r: SgResult) {
+    const k = this.known.get(r.url);
+    if (!k) return;
+    r.tipFr = k.label;
+    r.predicted = k.predicted;
+    if (k.date && !isNaN(new Date(k.date).getTime())) {
+      r.date = new Date(k.date).toISOString();
+      r.hasTime = true;
+    }
+  }
+
+  private async enrich(list: SgResult[]) {
+    let n = 0;
+    for (const r of list) {
+      if (this.known.has(r.url)) {
+        this.apply(r);
+        continue;
+      }
+      if (n >= MAX_ENRICH) continue;
+      n++;
+      try {
+        const res = await fetch(r.url, { headers: { 'User-Agent': UA } });
+        if (!res.ok) continue;
+        const html = await res.text();
+        const sc = html.match(/AI consensus predicted (\d+)–(\d+)/);
+        if (!sc) continue;
+        const win = html.match(/predicted ([^<"]+?) to win before kickoff/);
+        const st = html.match(/"startDate":"([^"]+)"/);
+        const label =
+          win ? `Victoire ${decode(win[1])}` : sc[1] === sc[2] ? 'Match nul' : '';
+        if (!label) continue;
+        this.known.set(r.url, {
+          label,
+          predicted: `${sc[1]}-${sc[2]}`,
+          date: st ? st[1] : '',
+        });
+        this.apply(r);
+      } catch {}
+    }
   }
 
   private merge(fresh: SgResult[]): SgResult[] {
@@ -136,7 +190,7 @@ export class ScoregptService {
       if (pick === 'home') home = pickTeam;
       if (pick === 'away') away = pickTeam;
 
-      this.known.set(url, pick === 'draw' ? 'Match nul' : `Victoire ${pickTeam}`);
+      this.known.set(url, { label: labelOf(pickTeam), predicted: `${h}-${a}`, date });
 
       out.push({
         date, league, leagueName: LEAGUES[league] ?? title(league),
@@ -165,10 +219,12 @@ export class ScoregptService {
       const d = slug.match(/(\d{4}-\d{2}-\d{2})$/);
       out.push({
         date: d ? `${d[1]}T12:00:00.000Z` : new Date().toISOString(),
+        hasTime: false,
         leagueName: LEAGUES[league] ?? title(league),
         home: decode(home),
         away: decode(away),
-        tipFr: this.known.get(url) ?? 'Pronostic IA',
+        tipFr: 'Pronostic IA',
+        predicted: null,
         score: `${hg}-${ag}`,
         won: hit.startsWith('✓'),
         url,

@@ -18,6 +18,8 @@ export interface NtMatch {
   tipFr: string;
   confidence: number | null;
   url: string;
+  homeLogo: string | null;
+  awayLogo: string | null;
 }
 
 export interface NtResult {
@@ -29,6 +31,8 @@ export interface NtResult {
   score: string;
   won: boolean;
   url: string;
+  homeLogo: string | null;
+  awayLogo: string | null;
 }
 
 @Injectable()
@@ -77,6 +81,25 @@ export class NerdytipsService {
       .sort((a, b) => b.date.localeCompare(a.date));
   }
 
+  private logos(html: string): Map<string, [string, string]> {
+    const map = new Map<string, [string, string]>();
+    const re = /href="(\/match-details\/[a-z0-9-]+)"/g;
+    const idx: { url: string; at: number }[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(html))) idx.push({ url: `https://nerdytips.com${m[1]}`, at: m.index });
+    for (let i = 0; i < idx.length; i++) {
+      if (map.has(idx[i].url)) continue;
+      const end = i + 1 < idx.length ? idx[i + 1].at : idx[i].at + 4000;
+      const imgs = html
+        .slice(idx[i].at, end)
+        .match(/https:\/\/cdn\.nerdytips\.com\/public\/img\/logos\/\d+\.webp/g);
+      if (imgs && imgs.length >= 2) {
+        map.set(idx[i].url, [`${imgs[0]}?width=96`, `${imgs[1]}?width=96`]);
+      }
+    }
+    return map;
+  }
+
   private translate(tip: string, home: string, away: string): string {
     const t = tip.trim();
     const l = t.toLowerCase();
@@ -118,6 +141,7 @@ export class NerdytipsService {
     let c: RegExpExecArray | null;
     while ((c = cre.exec(html))) conf.set(`https://nerdytips.com${c[1]}`, +c[2]);
 
+    const logos = this.logos(html);
     const out: NtMatch[] = [];
     const re = /<script type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/g;
     let m: RegExpExecArray | null;
@@ -145,6 +169,8 @@ export class NerdytipsService {
           tipFr: this.translate(d[1], home, away),
           confidence: conf.get(it.url) ?? null,
           url: it.url,
+          homeLogo: logos.get(it.url)?.[0] ?? null,
+          awayLogo: logos.get(it.url)?.[1] ?? null,
         });
       }
     }
@@ -158,6 +184,7 @@ export class NerdytipsService {
       /href="\/match-details\/([^"]+)"[^>]*data-kick="([^"]*)"[^>]*>[\s\S]*?Best tip: ([^<.]+?)(?:, odds [\d.]+)?, confidence [\d.]+\/10\. Final score (\d+)[–-](\d+), tip (won|lost)\./gi;
     const today = new Date().toISOString().slice(0, 10);
     const seen = new Set<string>();
+    const logos = this.logos(html);
     const out: NtResult[] = [];
     let m: RegExpExecArray | null;
 
@@ -189,6 +216,8 @@ export class NerdytipsService {
         score: `${hg}-${ag}`,
         won: res.toLowerCase() === "won",
         url,
+        homeLogo: logos.get(url)?.[0] ?? null,
+        awayLogo: logos.get(url)?.[1] ?? null,
       });
     }
     return out;
