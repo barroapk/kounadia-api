@@ -129,9 +129,9 @@ export class NerdytipsService {
     let g = l.match(/^(over|under) ([\d.]+)/);
     if (g) return `${g[1] === 'over' ? 'Plus' : 'Moins'} de ${g[2].replace('.', ',')} buts`;
     g = l.match(/^at least (\d+) goals?/);
-    if (g) return `Au moins ${g[1]} buts`;
+    if (g) return `Plus de ${(+g[1] - 0.5).toString().replace('.', ',')} buts`;
     g = l.match(/^maximum (\d+)(?: total)? goals?/);
-    if (g) return `Maximum ${g[1]} buts`;
+    if (g) return `Moins de ${(+g[1] + 0.5).toString().replace('.', ',')} buts`;
     return t;
   }
 
