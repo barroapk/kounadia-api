@@ -1,9 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 const PAGE = 'https://scoregpt.app/ai-football-predictions/matchday';
+const HOME = 'https://scoregpt.app/';
 const UA = 'KOUNADIA-Bot/1.0 (+https://kounadia-api.onrender.com)';
 const TTL = 3 * 3600 * 1000;
 const RETRY = 10 * 60 * 1000;
+const KEEP = 3 * 86400000;
 
 const LEAGUES: Record<string, string> = {
   'champions-league': 'Ligue des champions',
@@ -20,6 +22,8 @@ const title = (s: string) =>
   s.split('-').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 const norm = (s: string) =>
   s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const decode = (s: string) =>
+  s.replace(/&amp;/g, '&').replace(/&#39;|&#x27;/g, "'").replace(/&quot;/g, '"').trim();
 
 export interface SgMatch {
   date: string;
@@ -35,11 +39,25 @@ export interface SgMatch {
   url: string;
 }
 
+export interface SgResult {
+  date: string;
+  leagueName: string;
+  home: string;
+  away: string;
+  tipFr: string;
+  score: string;
+  won: boolean;
+  url: string;
+}
+
 @Injectable()
 export class ScoregptService {
   private readonly log = new Logger(ScoregptService.name);
   private cache: SgMatch[] = [];
   private cachedAt = 0;
+  private results: SgResult[] = [];
+  private resultsAt = 0;
+  private known = new Map<string, string>();
 
   async getToday() {
     if (Date.now() - this.cachedAt > TTL) {
@@ -54,10 +72,35 @@ export class ScoregptService {
         if (!this.cache.length) throw e;
       }
     }
-    return {
-      source: 'ScoreGPT — https://scoregpt.app',
-      matches: this.cache,
-    };
+    return { source: 'ScoreGPT — https://scoregpt.app', matches: this.cache };
+  }
+
+  async getResults() {
+    if (Date.now() - this.resultsAt > TTL) {
+      try {
+        try {
+          await this.getToday();
+        } catch {}
+        const r = await fetch(HOME, { headers: { 'User-Agent': UA } });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        this.results = this.merge(this.parseResults(await r.text()));
+        this.resultsAt = Date.now();
+      } catch (e) {
+        this.log.warn(`ScoreGPT résultats indisponibles : ${e}`);
+        this.resultsAt = Date.now() - TTL + RETRY;
+        if (!this.results.length) throw e;
+      }
+    }
+    return { source: 'ScoreGPT — https://scoregpt.app', results: this.results };
+  }
+
+  private merge(fresh: SgResult[]): SgResult[] {
+    const map = new Map<string, SgResult>();
+    for (const r of [...this.results, ...fresh]) map.set(r.url, r);
+    const min = Date.now() - KEEP;
+    return [...map.values()]
+      .filter((r) => new Date(r.date).getTime() >= min)
+      .sort((a, b) => b.date.localeCompare(a.date));
   }
 
   private parse(html: string): SgMatch[] {
@@ -79,7 +122,7 @@ export class ScoregptService {
       const teams = slug.replace(/-\d{4}-\d{2}-\d{2}$/, '').split('-vs-');
       let home = title(teams[0] ?? '');
       let away = title(teams[1] ?? '');
-      const pickTeam = pickRaw.trim();
+      const pickTeam = decode(pickRaw);
       const h = +hg;
       const a = +ag;
       const p = norm(pickTeam);
@@ -93,6 +136,8 @@ export class ScoregptService {
       if (pick === 'home') home = pickTeam;
       if (pick === 'away') away = pickTeam;
 
+      this.known.set(url, pick === 'draw' ? 'Match nul' : `Victoire ${pickTeam}`);
+
       out.push({
         date, league, leagueName: LEAGUES[league] ?? title(league),
         home, away, pick, pickTeam, score: `${h}-${a}`,
@@ -103,5 +148,32 @@ export class ScoregptService {
     return out.sort(
       (x, y) => y.agree / y.models - x.agree / x.models || x.date.localeCompare(y.date),
     );
+  }
+
+  private parseResults(html: string): SgResult[] {
+    const re =
+      /href="\/ai-football-predictions\/([a-z0-9-]+)\/([a-z0-9-]+)"><div[^>]*><span>FT<\/span><span[^>]*>(✓ Hit|✗ Miss)<\/span><\/div><div[^>]*><span>([^<]+)<\/span><strong>(\d+)<\/strong><\/div><div[^>]*><span>([^<]+)<\/span><strong>(\d+)<\/strong>/g;
+    const seen = new Set<string>();
+    const out: SgResult[] = [];
+    let m: RegExpExecArray | null;
+
+    while ((m = re.exec(html))) {
+      const [, league, slug, hit, home, hg, away, ag] = m;
+      const url = `https://scoregpt.app/ai-football-predictions/${league}/${slug}`;
+      if (seen.has(url)) continue;
+      seen.add(url);
+      const d = slug.match(/(\d{4}-\d{2}-\d{2})$/);
+      out.push({
+        date: d ? `${d[1]}T12:00:00.000Z` : new Date().toISOString(),
+        leagueName: LEAGUES[league] ?? title(league),
+        home: decode(home),
+        away: decode(away),
+        tipFr: this.known.get(url) ?? 'Pronostic IA',
+        score: `${hg}-${ag}`,
+        won: hit.startsWith('✓'),
+        url,
+      });
+    }
+    return out;
   }
 }

@@ -9,4 +9,9 @@ export class NerdytipsController {
   today() {
     return this.nt.getToday();
   }
+
+  @Get('results')
+  results() {
+    return this.nt.getResults();
+  }
 }

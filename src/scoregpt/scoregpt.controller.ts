@@ -9,4 +9,9 @@ export class ScoregptController {
   today() {
     return this.sg.getToday();
   }
+
+  @Get('results')
+  results() {
+    return this.sg.getResults();
+  }
 }
