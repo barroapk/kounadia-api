@@ -15,7 +15,6 @@ import { OrderedLogitModule } from './prediction/ordered-logit/ordered-logit.mod
 import { ExtraCompetitionsModule } from './extra-competitions/extra-competitions.module';
 import { StandingsModule } from './standings/standings.module';
 import { CalendarModule } from './calendar/calendar.module';
-import { BrvmModule } from './stock-market/brvm/brvm.module';
 import { TipsModule } from './tips/tips.module';
 import { ScoregptModule } from './scoregpt/scoregpt.module';
 import { NerdytipsModule } from './nerdytips/nerdytips.module';
@@ -36,7 +35,6 @@ import { NerdytipsModule } from './nerdytips/nerdytips.module';
     ExtraCompetitionsModule,
     StandingsModule,
     CalendarModule,
-    BrvmModule,
     TipsModule,
     ScoregptModule,
     NerdytipsModule,
